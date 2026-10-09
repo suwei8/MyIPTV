@@ -45,15 +45,67 @@
         android:textSize="34sp"
         android:visibility="gone" />
 
-    <!-- 底部信息条 -->
+    <!-- 底部信息区：进度条(VOD)+信息条 -->
     <LinearLayout
-        android:id="@+id/info_bar"
+        android:id="@+id/info_wrap"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
         android:layout_marginStart="16dp"
         android:layout_marginEnd="16dp"
         android:layout_marginBottom="14dp"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/progress_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="@drawable/bg_info"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:layout_marginBottom="6dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/prog_cur"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="52dp"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+
+            <SeekBar
+                android:id="@+id/prog_bar"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="10dp"
+                android:layout_marginEnd="10dp"
+                android:focusable="false"
+                android:maxHeight="6dp"
+                android:thumbTint="#2196F3"
+                android:progressTint="#2196F3"
+                android:progressBackgroundTint="#40FFFFFF" />
+
+            <TextView
+                android:id="@+id/prog_dur"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="52dp"
+                android:gravity="end"
+                android:textColor="#B0FFFFFF"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+    <!-- 底部信息条 -->
+    <LinearLayout
+        android:id="@+id/info_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
         android:background="@drawable/bg_info"
         android:gravity="center_vertical"
         android:orientation="horizontal"
@@ -139,6 +191,7 @@
             android:layout_marginStart="12dp"
             android:textColor="#B0FFFFFF"
             android:textSize="14sp" />
+    </LinearLayout>
     </LinearLayout>
 
     <!-- 缓冲指示 -->

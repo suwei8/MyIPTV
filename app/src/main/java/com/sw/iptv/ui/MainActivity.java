@@ -8,6 +8,7 @@ import android.os.Looper;
 import android.view.GestureDetector;
 import android.view.KeyEvent;
 import android.view.View;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -55,8 +56,10 @@ import okhttp3.OkHttpClient;
 public class MainActivity extends AppCompatActivity {
 
     private PlayerView playerView;
-    private View eyeOverlay, loading, infoBar, channelPanel;
+    private View eyeOverlay, loading, infoBar, progressRow, channelPanel;
     private TextView inputNum, infoNum, infoName, infoNow, infoNext, infoTime, infoSpeed, infoLine, loadingText;
+    private TextView progCur, progDur;
+    private SeekBar progBar;
     private RecyclerView categoryList, channelList;
 
     private ExoPlayer player;
@@ -107,6 +110,22 @@ public class MainActivity extends AppCompatActivity {
         infoSpeed = findViewById(R.id.info_speed);
         infoLine = findViewById(R.id.info_line);
         inputNum = findViewById(R.id.input_num);
+        progressRow = findViewById(R.id.progress_row);
+        progCur = findViewById(R.id.prog_cur);
+        progDur = findViewById(R.id.prog_dur);
+        progBar = findViewById(R.id.prog_bar);
+        progBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int p, boolean fromUser) {
+                if (fromUser) progCur.setText(fmtTime(p * 1000L));
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {
+                handler.removeCallbacks(hideInfo);
+            }
+            @Override public void onStopTrackingTouch(SeekBar sb) {
+                if (player != null) player.seekTo(sb.getProgress() * 1000L);
+                scheduleInfoHide();
+            }
+        });
         channelPanel = findViewById(R.id.channel_panel);
         categoryList = findViewById(R.id.category_list);
         channelList = findViewById(R.id.channel_list);
@@ -202,8 +221,19 @@ public class MainActivity extends AppCompatActivity {
                 } else if (state == Player.STATE_ENDED) {
                     if (player.isCurrentMediaItemLive()) {
                         player.prepare();
+                    } else if (curCategory != null && curChannel != null) {
+                        // 点播播完自动下一集
+                        List<Channel> l = curCategory.channels;
+                        int i = l.indexOf(curChannel);
+                        if (i >= 0 && i < l.size() - 1) {
+                            Channel next = l.get(i + 1);
+                            toast("下一集: " + next.displayName());
+                            playChannel(next, curUrlIndexOf(next));
+                        } else {
+                            showLoading("播放完毕");
+                        }
                     } else {
-                        tryNextSource();
+                        showLoading("播放完毕");
                     }
                 }
             }
@@ -410,6 +440,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void run() {
                 infoTime.setText(clockFmt.format(new Date()));
+                updateProgress();
                 if (Settings.get().isShowNetSpeed() && bandwidthMeter != null) {
                     long est = bandwidthMeter.getBitrateEstimate() / 8;
                     infoSpeed.setText(String.format(Locale.US, "%.0f KB/s", est / 1024f));
@@ -423,6 +454,35 @@ public class MainActivity extends AppCompatActivity {
 
     private void showInfoBar() {
         infoBar.setVisibility(View.VISIBLE);
+        updateProgress();
+    }
+
+    private void updateProgress() {
+        boolean show = false;
+        if (player != null && infoBar.getVisibility() == View.VISIBLE
+                && !player.isCurrentMediaItemLive() && player.isCurrentMediaItemSeekable()) {
+            long dur = player.getDuration();
+            if (dur > 0 && dur != C.TIME_UNSET) {
+                long pos = pendingSeek != 0 && seekBase >= 0
+                        ? seekBase + pendingSeek : player.getCurrentPosition();
+                progBar.setMax((int) (dur / 1000));
+                progBar.setProgress((int) (Math.min(pos, dur) / 1000));
+                long buf = player.getBufferedPosition();
+                progBar.setSecondaryProgress((int) (Math.min(buf, dur) / 1000));
+                progCur.setText(fmtTime(pos));
+                progDur.setText(fmtTime(dur));
+                show = true;
+            }
+        }
+        progressRow.setVisibility(show ? View.VISIBLE : View.GONE);
+    }
+
+    private static String fmtTime(long ms) {
+        if (ms < 0) ms = 0;
+        long s = ms / 1000;
+        return s >= 3600
+                ? String.format(Locale.US, "%d:%02d:%02d", s / 3600, s % 3600 / 60, s % 60)
+                : String.format(Locale.US, "%02d:%02d", s / 60, s % 60);
     }
 
     private void scheduleInfoHide() {
@@ -432,12 +492,14 @@ public class MainActivity extends AppCompatActivity {
 
     private final Runnable hideInfo = () -> {
         if (channelPanel.getVisibility() != View.VISIBLE) infoBar.setVisibility(View.GONE);
+        progressRow.setVisibility(View.GONE);
         inputNum.setVisibility(View.GONE);
     };
 
     private void toggleInfoBar() {
         if (infoBar.getVisibility() == View.VISIBLE) {
             infoBar.setVisibility(View.GONE);
+            progressRow.setVisibility(View.GONE);
         } else {
             showInfoBar();
             scheduleInfoHide();
@@ -516,8 +578,48 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent e) {
-        if (e.getAction() != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(e);
         int code = e.getKeyCode();
+        boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
+
+        // 媒体控制键：任何状态下生效
+        switch (code) {
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                if (down && e.getRepeatCount() == 0) togglePause();
+                return true;
+            case KeyEvent.KEYCODE_MEDIA_PLAY:
+                if (down && e.getRepeatCount() == 0) setPaused(false);
+                return true;
+            case KeyEvent.KEYCODE_MEDIA_PAUSE:
+                if (down && e.getRepeatCount() == 0) setPaused(true);
+                return true;
+            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+                if (down) accumSeek(15000, e.getRepeatCount());
+                return true;
+            case KeyEvent.KEYCODE_MEDIA_REWIND:
+                if (down) accumSeek(-15000, e.getRepeatCount());
+                return true;
+            case KeyEvent.KEYCODE_MEDIA_NEXT:
+                if (down && e.getRepeatCount() == 0) zap(1);
+                return true;
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+                if (down && e.getRepeatCount() == 0) zap(-1);
+                return true;
+        }
+
+        if (!down) {
+            // 确认键短按=开菜单(UP时执行),长按=暂停(DOWN repeat时执行)
+            if (e.getAction() == KeyEvent.ACTION_UP
+                    && channelPanel.getVisibility() != View.VISIBLE
+                    && (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER
+                        || code == KeyEvent.KEYCODE_NUMPAD_ENTER)) {
+                if (!centerHeld) {
+                    if (!numBuf.isEmpty()) commitNum(); else showPanel();
+                }
+                centerHeld = false;
+                return true;
+            }
+            return super.dispatchKeyEvent(e);
+        }
 
         if (channelPanel.getVisibility() == View.VISIBLE) return panelKey(code, e) || super.dispatchKeyEvent(e);
 
@@ -543,14 +645,16 @@ public class MainActivity extends AppCompatActivity {
             case KeyEvent.KEYCODE_DPAD_CENTER:
             case KeyEvent.KEYCODE_ENTER:
             case KeyEvent.KEYCODE_NUMPAD_ENTER:
-                if (!numBuf.isEmpty()) { commitNum(); return true; }
-                showPanel();
+                if (e.getRepeatCount() > 0) {
+                    if (!centerHeld) togglePause();
+                    centerHeld = true;
+                }
                 return true;
             case KeyEvent.KEYCODE_DPAD_LEFT:
-                seekBy(-15000);
+                accumSeek(-15000, e.getRepeatCount());
                 return true;
             case KeyEvent.KEYCODE_DPAD_RIGHT:
-                seekBy(15000);
+                accumSeek(15000, e.getRepeatCount());
                 return true;
             case KeyEvent.KEYCODE_MENU:
                 startActivity(new Intent(this, SettingsActivity.class));
@@ -570,6 +674,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean exitArmed = false;
+    private boolean centerHeld = false;
+    private long pendingSeek = 0;
+    private long seekBase = -1;
 
     private boolean panelKey(int code, KeyEvent e) {
         switch (code) {
@@ -594,6 +701,7 @@ public class MainActivity extends AppCompatActivity {
             case KeyEvent.KEYCODE_DPAD_CENTER:
             case KeyEvent.KEYCODE_ENTER:
             case KeyEvent.KEYCODE_NUMPAD_ENTER:
+                if (e.getRepeatCount() > 0) return true;
                 if (!panelChannelsFocused) {
                     focusChannel();
                     return true;
@@ -627,14 +735,48 @@ public class MainActivity extends AppCompatActivity {
         inputNum.setVisibility(View.GONE);
     }
 
-    private void seekBy(long ms) {
+    private void togglePause() {
         if (player == null) return;
-        if (player.isCurrentMediaItemSeekable() || player.isCurrentMediaItemLive()) {
-            player.seekTo(player.getCurrentPosition() + ms);
+        if (player.getPlayWhenReady()) {
+            player.pause();
             showInfoBar();
             scheduleInfoHide();
+            toast("暂停");
+        } else {
+            if (player.isCurrentMediaItemLive()) player.seekToDefaultPosition();
+            player.play();
         }
     }
+
+    private void setPaused(boolean paused) {
+        if (player == null) return;
+        if (paused == !player.getPlayWhenReady()) return;
+        togglePause();
+    }
+
+    // 快进/快退:累计偏移+松手统一提交;按住自动加速(15s/跳→120s/跳)
+    private void accumSeek(long baseStep, int repeatCount) {
+        if (player == null) return;
+        if (!player.isCurrentMediaItemSeekable() || player.isCurrentMediaItemLive()) return;
+        long dur = player.getDuration();
+        if (dur <= 0 || dur == C.TIME_UNSET) return;
+        long step = baseStep * Math.min(1 + repeatCount, 8);
+        if (pendingSeek == 0) seekBase = player.getCurrentPosition();
+        long target = Math.max(0, Math.min(seekBase + pendingSeek + step, dur));
+        pendingSeek = target - seekBase;
+        showInfoBar();
+        scheduleInfoHide();
+        handler.removeCallbacks(seekCommit);
+        handler.postDelayed(seekCommit, 600);
+    }
+
+    private final Runnable seekCommit = () -> {
+        if (player != null && pendingSeek != 0 && seekBase >= 0) {
+            player.seekTo(seekBase + pendingSeek);
+        }
+        pendingSeek = 0;
+        seekBase = -1;
+    };
 
     // ---------- misc ----------
 
