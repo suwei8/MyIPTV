@@ -75,6 +75,7 @@ public class MainActivity extends AppCompatActivity {
     private long bufferingSince = 0;
     private boolean panelChannelsFocused = false;
     private int flatIdx = -1;
+    private final List<Channel> curList = new ArrayList<>();
 
     private final SimpleDateFormat clockFmt = new SimpleDateFormat("HH:mm", Locale.US);
 
@@ -137,6 +138,7 @@ public class MainActivity extends AppCompatActivity {
         chAdapter = new ChannelAdapter();
 
         catAdapter.onClick = (cat, pos) -> selectCategory(pos);
+        catAdapter.onFocus = (cat, pos) -> selectCategory(pos);
         chAdapter.onClick = (c, pos) -> {
             playChannel(c, curUrlIndexOf(c));
             hidePanel();
@@ -455,8 +457,7 @@ public class MainActivity extends AppCompatActivity {
         int ci = categories.indexOf(curCategory);
         catAdapter.setSelected(Math.max(ci, 0));
         selectCategory(Math.max(ci, 0));
-        categoryList.requestFocus();
-        panelChannelsFocused = false;
+        focusCategory();
     }
 
     private void hidePanel() {
@@ -468,11 +469,34 @@ public class MainActivity extends AppCompatActivity {
         if (pos < 0 || pos >= categories.size()) return;
         catAdapter.setSelected(pos);
         Category cat = categories.get(pos);
-        List<Channel> show = cat.name.equals("我的收藏") ? collectFavorites() : cat.channels;
-        chAdapter.setItems(show);
+        curList.clear();
+        curList.addAll(cat.name.equals("我的收藏") ? collectFavorites() : cat.channels);
+        chAdapter.setItems(curList);
         chAdapter.setPlaying(curChannel);
-        int pi = show.indexOf(curChannel);
+        int pi = curList.indexOf(curChannel);
         if (pi >= 0) channelList.scrollToPosition(pi);
+    }
+
+    private void focusCategory() {
+        panelChannelsFocused = false;
+        int pos = catAdapter.getSelected();
+        final int p = Math.max(pos, 0);
+        categoryList.requestFocus();
+        categoryList.post(() -> {
+            RecyclerView.ViewHolder vh = categoryList.findViewHolderForAdapterPosition(p);
+            if (vh != null) vh.itemView.requestFocus();
+        });
+    }
+
+    private void focusChannel() {
+        panelChannelsFocused = true;
+        int pos = curList.indexOf(curChannel);
+        final int p = Math.max(pos, 0);
+        channelList.requestFocus();
+        channelList.post(() -> {
+            RecyclerView.ViewHolder vh = channelList.findViewHolderForAdapterPosition(p);
+            if (vh != null) vh.itemView.requestFocus();
+        });
     }
 
     private List<Channel> collectFavorites() {
@@ -549,24 +573,29 @@ public class MainActivity extends AppCompatActivity {
 
     private boolean panelKey(int code, KeyEvent e) {
         switch (code) {
-            case KeyEvent.KEYCODE_DPAD_RIGHT:
-                if (!panelChannelsFocused) {
-                    channelList.requestFocus();
-                    panelChannelsFocused = true;
+            case KeyEvent.KEYCODE_DPAD_UP:
+            case KeyEvent.KEYCODE_DPAD_DOWN: {
+                View f = getCurrentFocus();
+                boolean inCat = f != null && isDescendant(categoryList, f);
+                boolean inCh = f != null && isDescendant(channelList, f);
+                if (!inCat && !inCh) {
+                    if (panelChannelsFocused) focusChannel(); else focusCategory();
+                    return true;
                 }
+                panelChannelsFocused = inCh;
+                return false;
+            }
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                if (!panelChannelsFocused) focusChannel();
                 return true;
             case KeyEvent.KEYCODE_DPAD_LEFT:
-                if (panelChannelsFocused) {
-                    categoryList.requestFocus();
-                    panelChannelsFocused = false;
-                }
+                if (panelChannelsFocused) focusCategory();
                 return true;
             case KeyEvent.KEYCODE_DPAD_CENTER:
             case KeyEvent.KEYCODE_ENTER:
             case KeyEvent.KEYCODE_NUMPAD_ENTER:
                 if (!panelChannelsFocused) {
-                    channelList.requestFocus();
-                    panelChannelsFocused = true;
+                    focusChannel();
                     return true;
                 }
                 return false; // RecyclerView item click handles
@@ -576,6 +605,15 @@ public class MainActivity extends AppCompatActivity {
             case KeyEvent.KEYCODE_BACK:
                 hidePanel();
                 return true;
+        }
+        return false;
+    }
+
+    private static boolean isDescendant(View parent, View child) {
+        while (child != null) {
+            if (child == parent) return true;
+            if (!(child.getParent() instanceof View)) return false;
+            child = (View) child.getParent();
         }
         return false;
     }

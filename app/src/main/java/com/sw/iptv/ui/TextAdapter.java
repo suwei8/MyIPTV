@@ -24,6 +24,7 @@ public class TextAdapter<T> extends RecyclerView.Adapter<TextAdapter.Holder> {
     private int selected = -1;
     public OnClick<T> onClick;
     public OnClick<T> onLongClick;
+    public OnClick<T> onFocus;
 
     public TextAdapter(Function<T, String> labeler) { this.labeler = labeler; }
 
@@ -63,6 +64,9 @@ public class TextAdapter<T> extends RecyclerView.Adapter<TextAdapter.Holder> {
         T item = items.get(pos);
         h.tv.setText(labeler.apply(item));
         h.tv.setTextColor(pos == selected ? 0xFF90CAF9 : 0xFFD0FFFF & 0xFFFFFFFF);
+        h.itemView.setOnFocusChangeListener((v, has) -> {
+            if (has && onFocus != null) onFocus.onClick(item, pos);
+        });
         h.itemView.setOnClickListener(v -> { if (onClick != null) onClick.onClick(item, pos); });
         h.itemView.setOnLongClickListener(v -> {
             if (onLongClick != null) { onLongClick.onClick(item, pos); return true; }
