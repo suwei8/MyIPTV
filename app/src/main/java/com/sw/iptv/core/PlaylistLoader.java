@@ -6,7 +6,9 @@ import android.os.Looper;
 
 import com.sw.iptv.App;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.nio.charset.Charset;
 import java.util.concurrent.TimeUnit;
 
@@ -56,7 +58,14 @@ public class PlaylistLoader {
                 // 本地文件路径直接读
                 try {
                     File f = new File(url);
-                    if (f.exists()) body = new String(java.nio.file.Files.readAllBytes(f.toPath()), Charset.forName("UTF-8"));
+                    if (f.exists()) {
+                        FileInputStream in = new FileInputStream(f);
+                        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                        byte[] buf = new byte[8192]; int n;
+                        while ((n = in.read(buf)) != -1) bos.write(buf, 0, n);
+                        in.close();
+                        body = new String(bos.toByteArray(), Charset.forName("UTF-8"));
+                    }
                 } catch (Exception e) {
                     err = e.getMessage();
                 }
