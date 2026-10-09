@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.GestureDetector;
 import android.view.KeyEvent;
 import android.view.View;
 import android.widget.TextView;
@@ -109,11 +110,26 @@ public class MainActivity extends AppCompatActivity {
         categoryList = findViewById(R.id.category_list);
         channelList = findViewById(R.id.channel_list);
 
-        findViewById(R.id.root).setOnClickListener(v -> toggleInfoBar());
-        findViewById(R.id.root).setOnLongClickListener(v -> {
-            startActivity(new Intent(this, SettingsActivity.class));
-            return true;
+        GestureDetector gd = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onSingleTapConfirmed(android.view.MotionEvent e) {
+                if (channelPanel.getVisibility() == View.VISIBLE) hidePanel();
+                else showPanel();
+                return true;
+            }
+
+            @Override
+            public boolean onDoubleTap(android.view.MotionEvent e) {
+                if (player != null) player.setPlayWhenReady(!player.getPlayWhenReady());
+                return true;
+            }
+
+            @Override
+            public void onLongPress(android.view.MotionEvent e) {
+                startActivity(new Intent(MainActivity.this, SettingsActivity.class));
+            }
         });
+        findViewById(R.id.touch_layer).setOnTouchListener((v, ev) -> gd.onTouchEvent(ev));
     }
 
     private void initLists() {

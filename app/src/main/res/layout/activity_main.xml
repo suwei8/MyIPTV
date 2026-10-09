@@ -13,6 +13,14 @@
         android:layout_height="match_parent"
         app:use_controller="false" />
 
+    <!-- 触屏手势层:单击=频道菜单,双击=暂停/播放,长按=设置 -->
+    <View
+        android:id="@+id/touch_layer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="true"
+        android:focusable="false" />
+
     <!-- 护眼模式遮罩 -->
     <View
         android:id="@+id/eye_overlay"
