@@ -13,3 +13,4 @@ release/
 *.keystore
 *.jks
 keystore.properties
+.env

@@ -1,13 +1,19 @@
 package com.sw.iptv.ui;
 
 import android.annotation.SuppressLint;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.GestureDetector;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -21,6 +27,9 @@ import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
+import androidx.media3.datasource.DataSource;
+import androidx.media3.datasource.DataSpec;
+import androidx.media3.datasource.TransferListener;
 import androidx.media3.datasource.okhttp.OkHttpDataSource;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
@@ -36,6 +45,7 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.sw.iptv.App;
 import com.sw.iptv.R;
+import com.sw.iptv.core.LogBuffer;
 import com.sw.iptv.core.PlaylistLoader;
 import com.sw.iptv.core.Settings;
 import com.sw.iptv.core.TxtParser;
@@ -49,6 +59,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import okhttp3.OkHttpClient;
 
@@ -56,11 +67,19 @@ import okhttp3.OkHttpClient;
 public class MainActivity extends AppCompatActivity {
 
     private PlayerView playerView;
-    private View eyeOverlay, loading, infoBar, progressRow, channelPanel;
+    private View eyeOverlay, loading, infoBar, progressRow, channelPanel, errorPanel;
     private TextView inputNum, infoNum, infoName, infoNow, infoNext, infoTime, infoSpeed, infoLine, loadingText;
-    private TextView progCur, progDur;
+    private TextView progCur, progDur, netSpeed, seekHint, errorText, btnCopyLog;
     private SeekBar progBar;
     private RecyclerView categoryList, channelList;
+
+    private final AtomicLong netBytes = new AtomicLong();
+    private long lastNetBytes = 0, lastNetTick = 0;
+    private boolean touchSeeking = false;
+    private float touchSlop = 32f;
+    private float touchSeekWidth = 1f;
+    private long touchSeekRange = 120_000L;
+    private float downX = 0f, downY = 0f;
 
     private ExoPlayer player;
     private DefaultBandwidthMeter bandwidthMeter;
@@ -129,11 +148,19 @@ public class MainActivity extends AppCompatActivity {
         channelPanel = findViewById(R.id.channel_panel);
         categoryList = findViewById(R.id.category_list);
         channelList = findViewById(R.id.channel_list);
+        netSpeed = findViewById(R.id.net_speed);
+        seekHint = findViewById(R.id.seek_hint);
+        errorPanel = findViewById(R.id.error_panel);
+        errorText = findViewById(R.id.error_text);
+        btnCopyLog = findViewById(R.id.btn_copy_log);
+        btnCopyLog.setOnClickListener(v -> copyLog());
+        touchSlop = ViewConfiguration.get(this).getScaledTouchSlop() * 4;
 
         GestureDetector gd = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override
             public boolean onSingleTapConfirmed(android.view.MotionEvent e) {
-                if (channelPanel.getVisibility() == View.VISIBLE) hidePanel();
+                if (errorPanel.getVisibility() == View.VISIBLE) hideErrorPanel();
+                else if (channelPanel.getVisibility() == View.VISIBLE) hidePanel();
                 else showPanel();
                 return true;
             }
@@ -148,8 +175,44 @@ public class MainActivity extends AppCompatActivity {
             public void onLongPress(android.view.MotionEvent e) {
                 startActivity(new Intent(MainActivity.this, SettingsActivity.class));
             }
+
+            @Override
+            public boolean onScroll(android.view.MotionEvent e1, android.view.MotionEvent e2,
+                                    float distanceX, float distanceY) {
+                // 用自己记录的按下坐标(Android 13+ e1 可能为 null)
+                float dx = e2.getX() - downX;
+                float dy = e2.getY() - downY;
+                if (!touchSeeking) {
+                    boolean horiz = Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(dy) * 1.2f;
+                    if (!horiz) return false;
+                    if (canTouchSeek()) {
+                        beginTouchSeek();
+                        if (!touchSeeking) return false;
+                    } else if (player != null && player.isCurrentMediaItemLive()
+                            && channelPanel.getVisibility() != View.VISIBLE) {
+                        flashLiveSeekHint();
+                        return true;
+                    } else {
+                        return false;
+                    }
+                }
+                updateTouchSeek(dx);
+                return true;
+            }
         });
-        findViewById(R.id.touch_layer).setOnTouchListener((v, ev) -> gd.onTouchEvent(ev));
+        findViewById(R.id.touch_layer).setOnTouchListener((v, ev) -> {
+            int act = ev.getActionMasked();
+            if (act == MotionEvent.ACTION_DOWN) {
+                downX = ev.getX();
+                downY = ev.getY();
+            }
+            boolean handled = gd.onTouchEvent(ev);
+            if (touchSeeking && (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL)) {
+                endTouchSeek(act == MotionEvent.ACTION_UP);
+                return true;
+            }
+            return handled;
+        });
     }
 
     private void initLists() {
@@ -177,6 +240,26 @@ public class MainActivity extends AppCompatActivity {
                 .build();
         OkHttpDataSource.Factory dsFactory = new OkHttpDataSource.Factory(http)
                 .setUserAgent(Settings.get().getUserAgent());
+        // 统计实际下行字节数,供常驻网速显示
+        dsFactory.setTransferListener(new TransferListener() {
+            @Override
+            public void onTransferInitializing(DataSource source, DataSpec dataSpec, boolean isNetwork) {
+            }
+
+            @Override
+            public void onTransferStart(DataSource source, DataSpec dataSpec, boolean isNetwork) {
+            }
+
+            @Override
+            public void onBytesTransferred(DataSource source, DataSpec dataSpec,
+                                           boolean isNetwork, int bytesTransferred) {
+                netBytes.addAndGet(bytesTransferred);
+            }
+
+            @Override
+            public void onTransferEnd(DataSource source, DataSpec dataSpec, boolean isNetwork) {
+            }
+        });
 
         DefaultRenderersFactory rf = new DefaultRenderersFactory(this);
         rf.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER);
@@ -216,6 +299,7 @@ public class MainActivity extends AppCompatActivity {
                 } else if (state == Player.STATE_READY) {
                     bufferingSince = 0;
                     loading.setVisibility(View.GONE);
+                    hideErrorPanel();
                     updateInfoBar();
                     scheduleInfoHide();
                 } else if (state == Player.STATE_ENDED) {
@@ -240,6 +324,15 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onPlayerError(PlaybackException error) {
+                String url = curChannel != null && curUrlIndex < curChannel.urls.size()
+                        ? curChannel.urls.get(curUrlIndex) : "";
+                LogBuffer.log("error", error.getErrorCodeName() + " | " + error.getMessage()
+                        + " | " + (curChannel != null ? curChannel.displayName() : "?")
+                        + " | " + url);
+                for (Throwable c = error.getCause(); c != null && c.getCause() != c; c = c.getCause()) {
+                    LogBuffer.log("error", "  cause: " + c);
+                }
+                showError(error.getErrorCodeName() + ": " + error.getMessage());
                 if (curChannel != null && curChannel.urls.size() <= 1) {
                     showLoading("播放失败,20秒后自动重试");
                     handler.postDelayed(singleRetry, 20000);
@@ -266,9 +359,12 @@ public class MainActivity extends AppCompatActivity {
                 }
                 rebuildFlat();
                 catAdapter.setItems(categories);
+                LogBuffer.log("playlist", "加载完成: " + categories.size() + " 分类 "
+                        + flatChannels.size() + " 频道");
 
                 if (result.totalChannels == 0) {
                     showLoading("源为空,请在设置中检查源地址");
+                    showError("源为空,请在设置中检查源地址");
                     return;
                 }
                 loading.setVisibility(View.GONE);
@@ -277,7 +373,9 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onError(String msg) {
+                LogBuffer.log("playlist", "源加载失败: " + msg);
                 showLoading("源加载失败: " + msg + "\n按菜单键打开设置");
+                showError("源加载失败: " + msg);
             }
         });
     }
@@ -311,8 +409,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private final Runnable singleRetry = () -> {
-        if (curChannel != null && (player == null || !player.isPlaying()))
+        if (curChannel != null && (player == null || !player.isPlaying())) {
+            LogBuffer.log("play", "自动重试: " + curChannel.displayName());
             playChannel(curChannel, curUrlIndex);
+        }
     };
 
     private void playChannel(Channel c, int urlIndex) {
@@ -321,12 +421,15 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         handler.removeCallbacks(singleRetry);
+        hideErrorPanel();
         curChannel = c;
         for (Category cat : categories) if (cat.channels.contains(c)) { curCategory = cat; break; }
         curUrlIndex = Math.max(0, Math.min(urlIndex, c.urls.size() - 1));
         flatIdx = flatChannels.indexOf(c);
 
         String url = c.urls.get(curUrlIndex);
+        LogBuffer.log("play", c.displayName() + " | 线路" + (curUrlIndex + 1)
+                + "/" + c.urls.size() + " | " + url);
         if (Settings.get().isRememberURLIndex()) Settings.get().saveUrlIndex(c, curUrlIndex);
 
         long seekTo = 0;
@@ -354,6 +457,8 @@ public class MainActivity extends AppCompatActivity {
         }
         curUrlIndex = (curUrlIndex + 1) % curChannel.urls.size();
         String name = curUrlIndex < curChannel.urlNames.size() ? curChannel.urlNames.get(curUrlIndex) : "";
+        LogBuffer.log("play", "切换线路 " + (curUrlIndex + 1) + "/" + curChannel.urls.size()
+                + (name.isEmpty() ? "" : " " + name));
         toast("切换到线路 " + (curUrlIndex + 1) + (name.isEmpty() ? "" : " " + name));
         playChannel(curChannel, curUrlIndex);
     }
@@ -374,6 +479,7 @@ public class MainActivity extends AppCompatActivity {
                         && System.currentTimeMillis() - bufferingSince > timeout * 1000L
                         && curChannel != null && curChannel.urls.size() > 1) {
                     bufferingSince = 0;
+                    LogBuffer.log("play", "缓冲超时" + timeout + "秒,切换线路");
                     tryNextSource();
                 }
                 handler.postDelayed(this, 1000);
@@ -441,15 +547,34 @@ public class MainActivity extends AppCompatActivity {
             public void run() {
                 infoTime.setText(clockFmt.format(new Date()));
                 updateProgress();
-                if (Settings.get().isShowNetSpeed() && bandwidthMeter != null) {
-                    long est = bandwidthMeter.getBitrateEstimate() / 8;
-                    infoSpeed.setText(String.format(Locale.US, "%.0f KB/s", est / 1024f));
+                // 每秒实际传输字节 → 实时网速
+                long now = SystemClock.elapsedRealtime();
+                if (lastNetTick == 0) {
+                    lastNetTick = now;
+                    lastNetBytes = netBytes.get();
+                }
+                long dt = now - lastNetTick;
+                long db = netBytes.get() - lastNetBytes;
+                lastNetTick = now;
+                lastNetBytes = netBytes.get();
+                String speedTxt = fmtSpeed(dt > 0 ? db * 1000.0 / dt : 0);
+                if (Settings.get().isShowNetSpeed()) {
+                    netSpeed.setText(speedTxt);
+                    netSpeed.setVisibility(View.VISIBLE);
+                    infoSpeed.setText(speedTxt);
                 } else {
+                    netSpeed.setVisibility(View.GONE);
                     infoSpeed.setText("");
                 }
                 handler.postDelayed(this, 1000);
             }
         }, 1000);
+    }
+
+    private static String fmtSpeed(double bps) {
+        if (bps >= 1024 * 1024) return String.format(Locale.US, "%.1f MB/s", bps / 1048576.0);
+        if (bps >= 1024) return String.format(Locale.US, "%.0f KB/s", bps / 1024.0);
+        return (long) Math.max(bps, 0) + " B/s";
     }
 
     private void showInfoBar() {
@@ -491,6 +616,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private final Runnable hideInfo = () -> {
+        if (touchSeeking) return;
         if (channelPanel.getVisibility() != View.VISIBLE) infoBar.setVisibility(View.GONE);
         progressRow.setVisibility(View.GONE);
         inputNum.setVisibility(View.GONE);
@@ -510,6 +636,109 @@ public class MainActivity extends AppCompatActivity {
         loading.setVisibility(View.VISIBLE);
         loadingText.setText(msg);
     }
+
+    // ---------- 播放失败面板 / 日志复制 ----------
+
+    private void showError(String msg) {
+        StringBuilder sb = new StringBuilder();
+        if (curChannel != null) {
+            sb.append(curChannel.displayName());
+            if (curUrlIndex < curChannel.urls.size()) {
+                sb.append('\n').append(curChannel.urls.get(curUrlIndex));
+            }
+            sb.append('\n');
+        }
+        sb.append(msg);
+        errorText.setText(sb);
+        errorPanel.setVisibility(View.VISIBLE);
+        btnCopyLog.requestFocus();
+    }
+
+    private void hideErrorPanel() {
+        errorPanel.setVisibility(View.GONE);
+    }
+
+    private void copyLog() {
+        StringBuilder sb = new StringBuilder("MyIPTV ");
+        try {
+            sb.append(getPackageManager().getPackageInfo(getPackageName(), 0).versionName);
+        } catch (Exception ignored) {
+        }
+        sb.append(" | ").append(Build.MODEL)
+                .append(" | Android ").append(Build.VERSION.RELEASE).append('\n');
+        if (curChannel != null) {
+            sb.append("频道: ").append(curChannel.displayName())
+                    .append("  线路").append(curUrlIndex + 1)
+                    .append('/').append(curChannel.urls.size()).append('\n');
+            if (curUrlIndex < curChannel.urls.size()) {
+                sb.append("URL: ").append(curChannel.urls.get(curUrlIndex)).append('\n');
+            }
+        }
+        sb.append("----------------\n").append(LogBuffer.dump());
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        cm.setPrimaryClip(ClipData.newPlainText("MyIPTV日志", sb.toString()));
+        LogBuffer.log("ui", "日志已复制到剪贴板");
+        toast("日志已复制,可粘贴发送");
+    }
+
+    // ---------- 触屏滑动进度 ----------
+
+    private boolean canTouchSeek() {
+        return player != null
+                && channelPanel.getVisibility() != View.VISIBLE
+                && errorPanel.getVisibility() != View.VISIBLE
+                && player.isCurrentMediaItemSeekable()
+                && !player.isCurrentMediaItemLive();
+    }
+
+    // 满屏横向滑动对应的时长:片长的1/8,限制在 90s~片长 之间
+    private void beginTouchSeek() {
+        long dur = player.getDuration();
+        if (dur <= 0 || dur == C.TIME_UNSET) return;
+        touchSeeking = true;
+        handler.removeCallbacks(seekCommit);
+        touchSeekWidth = Math.max(1, playerView.getWidth());
+        touchSeekRange = Math.min(dur, Math.max(90_000L, dur / 8));
+        seekBase = player.getCurrentPosition();
+        pendingSeek = 0;
+        handler.removeCallbacks(hideInfo);
+        showInfoBar();
+        seekHint.setVisibility(View.VISIBLE);
+    }
+
+    private void updateTouchSeek(float totalDx) {
+        if (player == null) return;
+        long dur = player.getDuration();
+        long target = seekBase + (long) (totalDx / touchSeekWidth * touchSeekRange);
+        target = Math.max(0, Math.min(target, dur));
+        pendingSeek = target - seekBase;
+        updateProgress();
+        seekHint.setText((pendingSeek >= 0 ? "+" : "-") + fmtTime(Math.abs(pendingSeek))
+                + "   " + fmtTime(target) + " / " + fmtTime(dur));
+    }
+
+    private void endTouchSeek(boolean commit) {
+        touchSeeking = false;
+        seekHint.setVisibility(View.GONE);
+        if (commit && player != null && seekBase >= 0 && pendingSeek != 0) {
+            player.seekTo(seekBase + pendingSeek);
+        }
+        pendingSeek = 0;
+        seekBase = -1;
+        updateProgress();
+        scheduleInfoHide();
+    }
+
+    private void flashLiveSeekHint() {
+        seekHint.setText("直播节目不支持快进快退");
+        seekHint.setVisibility(View.VISIBLE);
+        handler.removeCallbacks(hideSeekHint);
+        handler.postDelayed(hideSeekHint, 1500);
+    }
+
+    private final Runnable hideSeekHint = () -> {
+        if (!touchSeeking) seekHint.setVisibility(View.GONE);
+    };
 
     // ---------- channel panel ----------
 
@@ -580,6 +809,15 @@ public class MainActivity extends AppCompatActivity {
     public boolean dispatchKeyEvent(KeyEvent e) {
         int code = e.getKeyCode();
         boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
+
+        // 错误面板显示时:返回键关闭,其余按键交给焦点视图(复制日志按钮)
+        if (errorPanel.getVisibility() == View.VISIBLE) {
+            if (down && code == KeyEvent.KEYCODE_BACK) {
+                hideErrorPanel();
+                return true;
+            }
+            return super.dispatchKeyEvent(e);
+        }
 
         // 媒体控制键：任何状态下生效
         switch (code) {

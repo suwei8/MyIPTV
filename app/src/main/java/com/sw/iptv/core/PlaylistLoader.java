@@ -36,6 +36,7 @@ public class PlaylistLoader {
         Handler main = new Handler(Looper.getMainLooper());
         new Thread(() -> {
             String url = Settings.get().getChannelUrl();
+            LogBuffer.log("playlist", "开始拉取: " + url);
             String body = null;
             String err = null;
             if (url != null && (url.startsWith("http://") || url.startsWith("https://"))) {
@@ -52,7 +53,7 @@ public class PlaylistLoader {
                         }
                     }
                 } catch (Exception e) {
-                    err = e.getMessage();
+                    err = e.getClass().getSimpleName() + ": " + e.getMessage();
                 }
             } else if (url != null) {
                 // 本地文件路径直接读
@@ -74,11 +75,13 @@ public class PlaylistLoader {
             if (body == null && err == null) err = "源内容为空";
             if (body == null) {
                 String e2 = err;
+                LogBuffer.log("playlist", "拉取失败: " + e2);
                 main.post(() -> cb.onError(e2 == null ? "加载失败" : e2));
                 return;
             }
 
             String b = body;
+            LogBuffer.log("playlist", "拉取成功: " + b.length() + " 字节");
             File appDir = App.ctx().getExternalFilesDir("playlists");
             TxtParser.Result result = TxtParser.parse(b, localDir(), appDir);
             if (result.epgUrl != null && !result.epgUrl.isEmpty()) {

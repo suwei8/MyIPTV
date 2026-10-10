@@ -3,6 +3,8 @@ package com.sw.iptv;
 import android.app.Application;
 import android.content.Context;
 
+import com.sw.iptv.core.LogBuffer;
+
 public class App extends Application {
     private static App instance;
     public static volatile boolean playlistDirty = false;
@@ -19,5 +21,6 @@ public class App extends Application {
     public void onCreate() {
         super.onCreate();
         instance = this;
+        LogBuffer.hookCrashes();
     }
 }
