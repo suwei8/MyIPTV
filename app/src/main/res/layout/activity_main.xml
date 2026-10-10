@@ -223,25 +223,47 @@
         android:layout_width="wrap_content"
         android:layout_height="match_parent"
         android:layout_gravity="start"
-        android:orientation="horizontal"
+        android:orientation="vertical"
         android:visibility="gone">
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/category_list"
-            android:layout_width="170dp"
-            android:layout_height="match_parent"
-            android:background="#B3121720" />
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:orientation="horizontal">
 
-        <View
-            android:layout_width="1dp"
-            android:layout_height="match_parent"
-            android:background="#30FFFFFF" />
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/category_list"
+                android:layout_width="170dp"
+                android:layout_height="match_parent"
+                android:background="#B3121720" />
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/channel_list"
-            android:layout_width="300dp"
-            android:layout_height="match_parent"
-            android:background="#99121620" />
+            <View
+                android:layout_width="1dp"
+                android:layout_height="match_parent"
+                android:background="#30FFFFFF" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/channel_list"
+                android:layout_width="300dp"
+                android:layout_height="match_parent"
+                android:background="#99121620" />
+        </LinearLayout>
+
+        <!-- 面板底部设置入口(手机可点按,遥控器可聚焦) -->
+        <TextView
+            android:id="@+id/btn_settings"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_panel_button"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:paddingTop="10dp"
+            android:paddingBottom="10dp"
+            android:text="⚙ 设置"
+            android:textColor="#FFFFFF"
+            android:textSize="15sp" />
     </LinearLayout>
 
     <!-- 常驻实时网速(设置开启后始终显示) -->

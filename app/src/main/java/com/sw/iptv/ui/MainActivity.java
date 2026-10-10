@@ -154,6 +154,8 @@ public class MainActivity extends AppCompatActivity {
         errorText = findViewById(R.id.error_text);
         btnCopyLog = findViewById(R.id.btn_copy_log);
         btnCopyLog.setOnClickListener(v -> copyLog());
+        findViewById(R.id.btn_settings).setOnClickListener(v ->
+                startActivity(new Intent(this, SettingsActivity.class)));
         touchSlop = ViewConfiguration.get(this).getScaledTouchSlop() * 4;
 
         GestureDetector gd = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
@@ -940,7 +942,11 @@ public class MainActivity extends AppCompatActivity {
             case KeyEvent.KEYCODE_ENTER:
             case KeyEvent.KEYCODE_NUMPAD_ENTER:
                 if (e.getRepeatCount() > 0) return true;
-                if (!panelChannelsFocused) {
+                // 焦点在面板内非列表控件(如设置按钮)上时,交给视图系统触发点击
+                View foc = getCurrentFocus();
+                boolean onList = foc != null
+                        && (isDescendant(categoryList, foc) || isDescendant(channelList, foc));
+                if (!panelChannelsFocused && (foc == null || onList)) {
                     focusChannel();
                     return true;
                 }
