@@ -239,6 +239,20 @@ public class MainActivity extends AppCompatActivity {
         OkHttpClient http = new OkHttpClient.Builder()
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(60, TimeUnit.SECONDS)
+                // bilivideo CDN 强制 Referer+浏览器UA; 网络拦截器对每次真实请求(含重定向)生效,
+                // 命中B站CDN域时注入, 使TV可直连CDN跳过小主机中继
+                .addNetworkInterceptor(chain -> {
+                    okhttp3.Request req = chain.request();
+                    String host = req.url().host();
+                    if (host.endsWith(".bilivideo.com") || host.endsWith(".bilivideo.cn")
+                            || host.endsWith(".hdslb.com")) {
+                        req = req.newBuilder()
+                                .header("Referer", "https://www.bilibili.com")
+                                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36")
+                                .build();
+                    }
+                    return chain.proceed(req);
+                })
                 .build();
         OkHttpDataSource.Factory dsFactory = new OkHttpDataSource.Factory(http)
                 .setUserAgent(Settings.get().getUserAgent());
