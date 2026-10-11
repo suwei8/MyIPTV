@@ -23,7 +23,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      # ubuntu-latest 已预装 Android SDK, 无需 setup-android
 
       # 仓库 secrets 配了 KEYSTORE_* 就出正式签名包; 否则 debug 签名兜底(需卸载旧版才能装)
       - name: Prepare keystore
