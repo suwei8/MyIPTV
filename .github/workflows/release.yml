@@ -45,20 +45,22 @@ jobs:
 
       - name: Build
         run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
           if [ "$signed" = "release" ]; then
             gradle assembleRelease --no-daemon
-            cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/app.apk"
+            cp app/build/outputs/apk/release/app-release.apk "MyIPTV-${TAG}.apk"
           else
             gradle assembleDebug --no-daemon
-            cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/app.apk"
+            cp app/build/outputs/apk/debug/app-debug.apk "MyIPTV-${TAG}-debug.apk"
           fi
+          ls -la *.apk
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: ${{ inputs.tag || github.ref_name }}
-          files: app.apk
+          files: MyIPTV-*.apk
           body: |
             ${{ inputs.tag || github.ref_name }} — CI 自动构建 (${{ env.signed }} 签名)
           generate_release_notes: true
