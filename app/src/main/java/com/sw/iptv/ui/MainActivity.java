@@ -31,6 +31,7 @@ import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DataSpec;
 import androidx.media3.datasource.TransferListener;
 import androidx.media3.datasource.okhttp.OkHttpDataSource;
+import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.mediacodec.MediaCodecInfo;
@@ -80,6 +81,8 @@ public class MainActivity extends AppCompatActivity {
     private float touchSeekWidth = 1f;
     private long touchSeekRange = 120_000L;
     private float downX = 0f, downY = 0f;
+    private boolean vZapActive = false;   // 竖滑中(提示可见)
+    private boolean vZapDone = false;     // 本次手势已触发换台
 
     private ExoPlayer player;
     private DefaultBandwidthMeter bandwidthMeter;
@@ -184,22 +187,42 @@ public class MainActivity extends AppCompatActivity {
                 // 用自己记录的按下坐标(Android 13+ e1 可能为 null)
                 float dx = e2.getX() - downX;
                 float dy = e2.getY() - downY;
-                if (!touchSeeking) {
+                if (!touchSeeking && !vZapDone) {
                     boolean horiz = Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(dy) * 1.2f;
-                    if (!horiz) return false;
-                    if (canTouchSeek()) {
-                        beginTouchSeek();
-                        if (!touchSeeking) return false;
-                    } else if (player != null && player.isCurrentMediaItemLive()
-                            && channelPanel.getVisibility() != View.VISIBLE) {
-                        flashLiveSeekHint();
-                        return true;
+                    if (horiz) {
+                        if (canTouchSeek()) {
+                            beginTouchSeek();
+                            if (!touchSeeking) return false;
+                        } else if (player != null && player.isCurrentMediaItemLive()
+                                && channelPanel.getVisibility() != View.VISIBLE) {
+                            flashLiveSeekHint();
+                            return true;
+                        } else {
+                            return false;
+                        }
                     } else {
-                        return false;
+                        // 竖向滑动换台(手机):上滑=下一频道,下滑=上一频道
+                        boolean vert = Math.abs(dy) > touchSlop && Math.abs(dy) > Math.abs(dx) * 1.2f;
+                        if (!vert || channelPanel.getVisibility() == View.VISIBLE
+                                || errorPanel.getVisibility() == View.VISIBLE) return false;
+                        vZapActive = true;
+                        int dir = dy < 0 ? 1 : -1;
+                        if (Settings.get().isReverseSwitchStyle()) dir = -dir;
+                        seekHint.setText(dir > 0 ? "滑动: 下一个频道" : "滑动: 上一个频道");
+                        seekHint.setVisibility(View.VISIBLE);
+                        if (Math.abs(dy) >= vZapThreshold()) {
+                            vZapDone = true;
+                            zap(dy < 0 ? 1 : -1);
+                            handler.postDelayed(hideSeekHint, 1200);
+                        }
+                        return true;
                     }
                 }
-                updateTouchSeek(dx);
-                return true;
+                if (touchSeeking) {
+                    updateTouchSeek(dx);
+                    return true;
+                }
+                return vZapDone;
             }
         });
         findViewById(R.id.touch_layer).setOnTouchListener((v, ev) -> {
@@ -207,11 +230,20 @@ public class MainActivity extends AppCompatActivity {
             if (act == MotionEvent.ACTION_DOWN) {
                 downX = ev.getX();
                 downY = ev.getY();
+                vZapDone = false;
+                vZapActive = false;
             }
             boolean handled = gd.onTouchEvent(ev);
-            if (touchSeeking && (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL)) {
-                endTouchSeek(act == MotionEvent.ACTION_UP);
-                return true;
+            if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
+                if (touchSeeking) {
+                    endTouchSeek(act == MotionEvent.ACTION_UP);
+                    return true;
+                }
+                if (vZapActive) {
+                    seekHint.setVisibility(View.GONE);
+                    vZapActive = false;
+                }
+                vZapDone = false;
             }
             return handled;
         });
@@ -299,9 +331,19 @@ public class MainActivity extends AppCompatActivity {
         });
 
         bandwidthMeter = new DefaultBandwidthMeter.Builder(this).build();
+        // min=50s(默认): 缓冲跌破即恢复拉流; max=600s: mp4等文件源网速好就一直预载
+        // 到领先10分钟才停,断网后靠缓冲余量继续播; 直播受实时供给限制不会超发
+        // 字节上限: 取 min(600MB, 可用堆一半),下限150MB(≈旧默认)防低配设备OOM/退化
+        long heap = Runtime.getRuntime().maxMemory();
+        int targetBytes = (int) Math.max(150L << 20, Math.min(600L << 20, heap / 2));
+        DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
+                .setBufferDurationsMs(50_000, 600_000, 2_500, 5_000)
+                .setTargetBufferBytes(targetBytes)
+                .build();
         player = new ExoPlayer.Builder(this, rf)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(dsFactory))
                 .setBandwidthMeter(bandwidthMeter)
+                .setLoadControl(loadControl)
                 .build();
         playerView.setPlayer(player);
         playerView.setResizeMode(mapScale(Settings.get().getScreenScale()));
@@ -309,6 +351,7 @@ public class MainActivity extends AppCompatActivity {
         player.addListener(new Player.Listener() {
             @Override
             public void onPlaybackStateChanged(int state) {
+                updateKeepScreenOn();
                 if (state == Player.STATE_BUFFERING) {
                     bufferingSince = System.currentTimeMillis();
                     showLoading("缓冲中…");
@@ -339,6 +382,16 @@ public class MainActivity extends AppCompatActivity {
             }
 
             @Override
+            public void onIsPlayingChanged(boolean isPlaying) {
+                updateKeepScreenOn();
+            }
+
+            @Override
+            public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+                updateKeepScreenOn();
+            }
+
+            @Override
             public void onPlayerError(PlaybackException error) {
                 String url = curChannel != null && curUrlIndex < curChannel.urls.size()
                         ? curChannel.urls.get(curUrlIndex) : "";
@@ -359,6 +412,14 @@ public class MainActivity extends AppCompatActivity {
         });
 
         startWatchdog();
+    }
+
+    // 播放中(含缓冲)保持屏幕常亮;暂停/播完允许熄屏省电
+    private void updateKeepScreenOn() {
+        boolean on = player != null && player.getPlayWhenReady()
+                && (player.getPlaybackState() == Player.STATE_READY
+                    || player.getPlaybackState() == Player.STATE_BUFFERING);
+        playerView.setKeepScreenOn(on);
     }
 
     // ---------- playlist ----------
@@ -750,6 +811,11 @@ public class MainActivity extends AppCompatActivity {
         seekHint.setVisibility(View.VISIBLE);
         handler.removeCallbacks(hideSeekHint);
         handler.postDelayed(hideSeekHint, 1500);
+    }
+
+    // 竖滑换台触发阈值:约屏高18%,避免误触
+    private float vZapThreshold() {
+        return Math.max(touchSlop * 3, playerView.getHeight() * 0.18f);
     }
 
     private final Runnable hideSeekHint = () -> {
