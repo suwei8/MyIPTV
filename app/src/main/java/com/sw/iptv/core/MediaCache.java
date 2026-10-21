@@ -40,7 +40,7 @@ public final class MediaCache {
 
     private static final long EVICT_LIMIT = 2L << 30;   // 磁盘缓存上限2GB
     private static final int LOG_EVERY = 20;            // HLS每20片记一次进度
-    private static final long COOLDOWN_MS = 90_000;     // 预拉403后该URL冷却时长
+    private static final long COOLDOWN_MS = 60_000;     // 预拉403后该URL冷却时长
     private static final long SLOW_CAP_MS = 3_000;      // 节流后切片间隔上限
     private static final long FETCH_MIN_MS = 50;        // <50ms视为缓存命中,不计节流
     private static final int SLEEP_EVERY = 2;           // 缓存命中walk提速:每2片才可能sleep一次
@@ -55,6 +55,8 @@ public final class MediaCache {
     // 每URL的预拉403失败次数/冷却截止(时间戳ms);首拉全速,403后自适应降速
     private static final Map<String, Integer> urlFails = new HashMap<>();
     private static final Map<String, Long> coolUntil = new HashMap<>();
+    // 已完整下完的URL(重启kick时跳过,避免重复walk)
+    private static volatile String completedUrl;
 
     private MediaCache() {}
 
@@ -87,10 +89,11 @@ public final class MediaCache {
     /**
      * 开始全速预拉该URL(自动取消上一个)。
      * m3u8→拉全部VOD切片;其它→整文件下到磁盘。
-     * 若该URL处于403冷却期(源站限流/边缘403),跳过本周期,不再加压。
+     * 已下完的URL直接跳过;403冷却期内跳过(限流窗口过了由外层kick再触发)。
      */
     public static synchronized void startPrefetch(String url) {
         if (factory == null || url == null || url.isEmpty()) return;
+        if (url.equals(completedUrl)) return;   // 已完整下完,不重复walk
         long now = System.currentTimeMillis();
         Long cool = coolUntil.get(url);
         if (cool != null) {
@@ -99,6 +102,7 @@ public final class MediaCache {
                 return;
             }
             coolUntil.remove(url);
+            LogBuffer.log("prefetch", "冷却结束,恢复预拉: " + url);
         }
         cancelPrefetch();
         stopFlag = false;
@@ -113,6 +117,7 @@ public final class MediaCache {
     public static synchronized void cancelPrefetch() {
         stopFlag = true;
         prefetchingUrl = null;
+        completedUrl = null;
         CacheWriter w = activeWriter;
         if (w != null) w.cancel();
         Thread t = prefetchThread;
@@ -131,6 +136,7 @@ public final class MediaCache {
                 LogBuffer.log("prefetch", "预拉完成(" + (System.currentTimeMillis() - t0)
                         + "ms): " + url);
                 urlFails.remove(url);   // 成功则重置节流,下次回到全速
+                completedUrl = url;
             }
         } catch (Exception e) {
             if (!stopFlag) {

@@ -103,6 +103,23 @@ public class MainActivity extends AppCompatActivity {
     private long retrySeekPos = -1; // 出错时的断点,自动重试时续播
     private int retrySeekCount = 0; // 同一断点重试次数,防坏位置无限重放
     private long seekGraceUntil = 0; // seek后看门狗宽限期,防快进缓冲被误判超时换源
+    private static final long PREFETCH_KICK_MS = 30_000; // 预拉心跳:防失败/冷却后无人重启
+    private final Runnable prefetchKick = new Runnable() {
+        @Override
+        public void run() {
+            if (player == null || player.getPlaybackState() != Player.STATE_READY
+                    || player.isCurrentMediaItemLive()
+                    || curChannel == null || curUrlIndex >= curChannel.urls.size()) {
+                return;  // 不再续排;下次READY会重新挂
+            }
+            String u = curChannel.urls.get(curUrlIndex);
+            // 预拉线程死了(403失败/冷却过期)而播放还READY时,只有这个心跳能把它拉起来
+            if (!u.equals(MediaCache.prefetching())) {
+                MediaCache.startPrefetch(u);
+            }
+            handler.postDelayed(this, PREFETCH_KICK_MS);
+        }
+    };
     private String numBuf = "";
     private long bufferingSince = 0;
     private boolean panelChannelsFocused = false;
@@ -361,6 +378,7 @@ public class MainActivity extends AppCompatActivity {
                 if (state == Player.STATE_BUFFERING) {
                     bufferingSince = System.currentTimeMillis();
                     MediaCache.cancelPrefetch();  // 缓冲时把带宽让给播放器,READY后再续拉
+                    handler.removeCallbacks(prefetchKick);
                     showLoading("缓冲中…");
                 } else if (state == Player.STATE_READY) {
                     bufferingSince = 0;
@@ -375,9 +393,13 @@ public class MainActivity extends AppCompatActivity {
                     // 直播(内容还在生成)只取消不预拉
                     if (player.isCurrentMediaItemLive()) {
                         MediaCache.cancelPrefetch();
+                        handler.removeCallbacks(prefetchKick);
                     } else if (curChannel != null && curUrlIndex < curChannel.urls.size()) {
                         String u = curChannel.urls.get(curUrlIndex);
                         if (!u.equals(MediaCache.prefetching())) MediaCache.startPrefetch(u);
+                        // 心跳: 预拉失败进冷却后无人重启,30s一次把它拉起来直到下完
+                        handler.removeCallbacks(prefetchKick);
+                        handler.postDelayed(prefetchKick, PREFETCH_KICK_MS);
                     }
                 } else if (state == Player.STATE_ENDED) {
                     if (player.isCurrentMediaItemLive()) {
@@ -556,6 +578,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         handler.removeCallbacks(singleRetry);
+        handler.removeCallbacks(prefetchKick);
         MediaCache.cancelPrefetch();   // 换台/重试: 先停掉上一个的预拉
         hideErrorPanel();
         curChannel = c;
