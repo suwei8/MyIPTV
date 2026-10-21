@@ -192,6 +192,38 @@
             android:layout_marginStart="12dp"
             android:textColor="#B0FFFFFF"
             android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/btn_pause"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:background="@drawable/bg_panel_button"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp"
+            android:focusable="true"
+            android:clickable="true"
+            android:text="⏸"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/btn_pip"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/bg_panel_button"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp"
+            android:focusable="true"
+            android:clickable="true"
+            android:text="小窗"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
     </LinearLayout>
     </LinearLayout>
 

@@ -95,4 +95,26 @@ public class Settings {
     public void saveTimeOut(int v) { ed.putInt("超时换源", v).commit(); }
     public int getChannelListStyle() { return sp.getInt("列表风格", 0); }
     public void saveChannelListStyle(int v) { ed.putInt("列表风格", v).commit(); }
+    public int getIntroSkip() { return sp.getInt("INTRO_SKIP", 0); }      // 秒,0=不跳
+    public void setIntroSkip(int v) { ed.putInt("INTRO_SKIP", v).commit(); }
+    public int getOutroSkip() { return sp.getInt("OUTRO_SKIP", 0); }      // 秒,0=不跳
+    public void setOutroSkip(int v) { ed.putInt("OUTRO_SKIP", v).commit(); }
+
+    // ---------- 全局最后会话(启动续播) ----------
+    public boolean isResumeOnLaunch() { return sp.getBoolean("RESUME_LAUNCH", true); }
+    public void setResumeOnLaunch(boolean v) { ed.putBoolean("RESUME_LAUNCH", v).commit(); }
+    public boolean isPipOnLeave() { return sp.getBoolean("PIP_ON_LEAVE", true); }
+    public void setPipOnLeave(boolean v) { ed.putBoolean("PIP_ON_LEAVE", v).commit(); }
+
+    public void saveLastSession(String key, int urlIndex, long pos) {
+        ed.putString("LAST_KEY", key)
+                .putInt("LAST_URLINDEX", urlIndex)
+                .putLong("LAST_POS", pos)
+                .putLong("LAST_TIME", System.currentTimeMillis())
+                .commit();
+    }
+    public String getLastKey() { return sp.getString("LAST_KEY", null); }
+    public int getLastUrlIndex() { return sp.getInt("LAST_URLINDEX", 0); }
+    public long getLastPos() { return sp.getLong("LAST_POS", 0); }
+    public long getLastTime() { return sp.getLong("LAST_TIME", 0); }
 }

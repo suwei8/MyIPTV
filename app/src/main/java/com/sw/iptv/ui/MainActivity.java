@@ -1,14 +1,20 @@
 package com.sw.iptv.ui;
 
 import android.annotation.SuppressLint;
+import android.app.PendingIntent;
+import android.app.PictureInPictureParams;
+import android.app.RemoteAction;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.res.Configuration;
+import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.util.Rational;
 import android.view.GestureDetector;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -25,6 +31,7 @@ import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.VideoSize;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import androidx.media3.datasource.DataSource;
@@ -58,6 +65,7 @@ import com.sw.iptv.model.Channel;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -73,6 +81,7 @@ public class MainActivity extends AppCompatActivity {
     private View eyeOverlay, loading, infoBar, progressRow, channelPanel, errorPanel;
     private TextView inputNum, infoNum, infoName, infoNow, infoNext, infoTime, infoSpeed, infoLine, loadingText;
     private TextView progCur, progDur, netSpeed, seekHint, errorText, btnCopyLog;
+    private TextView btnPause, btnPip;
     private SeekBar progBar;
     private RecyclerView categoryList, channelList;
 
@@ -89,6 +98,12 @@ public class MainActivity extends AppCompatActivity {
     private ExoPlayer player;
     private DefaultBandwidthMeter bandwidthMeter;
     private OkHttpClient mediaHttp;   // 播放链路HTTP客户端,403时清空连接池换新连接
+    public static MainActivity current; // PiP广播接收器回调用,随生命周期置空
+    private boolean userPaused = false;  // 用户主动暂停( onResume不强制恢复播放)
+    private boolean introSkipped = false, outroSkipped = false; // 本次播放已跳过片头/片尾
+    private long mediaStartPos = 0;      // 本次setMediaItem的起播位置(判断是否从片头起播)
+    private int vidW = 16, vidH = 9;     // 视频宽高比,供小窗参数
+    private long lastSessionSave = 0;    // 全局最后会话的节流保存时间戳
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<Category> categories = new ArrayList<>();
     private final List<Channel> flatChannels = new ArrayList<>();
@@ -134,6 +149,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        current = this;
         bindViews();
         initLists();
         initPlayer();
@@ -186,6 +202,10 @@ public class MainActivity extends AppCompatActivity {
         btnCopyLog.setOnClickListener(v -> copyLog());
         findViewById(R.id.btn_settings).setOnClickListener(v ->
                 startActivity(new Intent(this, SettingsActivity.class)));
+        btnPause = findViewById(R.id.btn_pause);
+        btnPip = findViewById(R.id.btn_pip);
+        btnPause.setOnClickListener(v -> togglePause());
+        btnPip.setOnClickListener(v -> enterPip());
         touchSlop = ViewConfiguration.get(this).getScaledTouchSlop() * 4;
 
         GestureDetector gd = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
@@ -199,7 +219,7 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public boolean onDoubleTap(android.view.MotionEvent e) {
-                if (player != null) player.setPlayWhenReady(!player.getPlayWhenReady());
+                togglePause();
                 return true;
             }
 
@@ -429,6 +449,16 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
                 updateKeepScreenOn();
+                updatePauseIcon();
+            }
+
+            @Override
+            public void onVideoSizeChanged(VideoSize videoSize) {
+                if (videoSize.width > 0 && videoSize.height > 0) {
+                    vidW = videoSize.width;
+                    vidH = videoSize.height;
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) updatePipParams();
+                }
             }
 
             @Override
@@ -532,9 +562,28 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void restoreLastChannel() {
-        if (Settings.get().isRememberPlay()) {
-            int ci = Settings.get().getCategoryIndex();
-            int chi = Settings.get().getChannelIndex();
+        Settings s = Settings.get();
+        // 启动续播: 按频道key(分类/名称)匹配上次会话,7天内有效
+        if (s.isResumeOnLaunch()) {
+            String k = s.getLastKey();
+            long age = System.currentTimeMillis() - s.getLastTime();
+            if (k != null && age < 7 * 24 * 3600_000L) {
+                for (Channel ch : flatChannels) {
+                    if (ch.key().equals(k)) {
+                        long pos = s.getLastPos();
+                        if (pos > 10_000) {
+                            toast("继续上次: " + ch.displayName() + " " + fmtTime(pos));
+                        }
+                        playChannel(ch, s.getLastUrlIndex(), pos > 0 ? pos : -1);
+                        return;
+                    }
+                }
+            }
+        }
+        // 兜底: 旧"记忆播放"按分类/频道下标恢复
+        if (s.isRememberPlay()) {
+            int ci = s.getCategoryIndex();
+            int chi = s.getChannelIndex();
             if (ci >= 0 && ci < categories.size()) {
                 Category cat = categories.get(ci);
                 if (chi >= 0 && chi < cat.channels.size()) {
@@ -580,6 +629,11 @@ public class MainActivity extends AppCompatActivity {
         handler.removeCallbacks(singleRetry);
         handler.removeCallbacks(prefetchKick);
         MediaCache.cancelPrefetch();   // 换台/重试: 先停掉上一个的预拉
+        // 换走前保存旧频道的最后会话(启动续播用)
+        if (curChannel != null && curChannel != c && player != null) {
+            long p = player.isCurrentMediaItemLive() ? 0 : player.getCurrentPosition();
+            Settings.get().saveLastSession(curChannel.key(), curUrlIndex, p);
+        }
         hideErrorPanel();
         curChannel = c;
         for (Category cat : categories) if (cat.channels.contains(c)) { curCategory = cat; break; }
@@ -603,6 +657,10 @@ public class MainActivity extends AppCompatActivity {
         if (seekTo > 0) player.seekTo(seekTo);
         player.prepare();
         player.setPlayWhenReady(true);
+        userPaused = false;          // 新频道从播放态开始
+        mediaStartPos = seekTo;      // 记录起播位置供片头跳过判断
+        introSkipped = false;
+        outroSkipped = false;
 
         saveIndexes();
         showInfoBar();
@@ -643,8 +701,10 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void run() {
                 int timeout = Settings.get().getTimeOut();
-                // seek后15秒内不换源:快进到未缓冲区必然短暂缓冲,不能误判为源挂了
+                // seek后15秒内不换源:快进到未缓冲区必然短暂缓冲,不能误判为源挂了;
+                // 暂停中(playWhenReady=false)不算卡死,不换源
                 if (timeout > 0 && bufferingSince > 0
+                        && player != null && player.getPlayWhenReady()
                         && System.currentTimeMillis() >= seekGraceUntil
                         && System.currentTimeMillis() - bufferingSince > timeout * 1000L
                         && curChannel != null && curChannel.urls.size() > 1) {
@@ -717,6 +777,8 @@ public class MainActivity extends AppCompatActivity {
             public void run() {
                 infoTime.setText(clockFmt.format(new Date()));
                 updateProgress();
+                checkSkip();
+                periodicSave();
                 // 每秒实际传输字节 → 实时网速
                 long now = SystemClock.elapsedRealtime();
                 if (lastNetTick == 0) {
@@ -778,6 +840,49 @@ public class MainActivity extends AppCompatActivity {
         return s >= 3600
                 ? String.format(Locale.US, "%d:%02d:%02d", s / 3600, s % 3600 / 60, s % 60)
                 : String.format(Locale.US, "%02d:%02d", s / 60, s % 60);
+    }
+
+    /** 片头/片尾自动跳过(设置里配秒数,0=关);仅点播、在播时生效 */
+    private void checkSkip() {
+        if (player == null || curChannel == null || player.isCurrentMediaItemLive()) return;
+        if (player.getPlaybackState() != Player.STATE_READY || !player.getPlayWhenReady()) return;
+        if (touchSeeking || pendingSeek != 0) return;
+        Settings s = Settings.get();
+        long pos = player.getCurrentPosition();
+        long dur = player.getDuration();
+        long now = System.currentTimeMillis();
+        int intro = s.getIntroSkip() * 1000;
+        int outro = s.getOutroSkip() * 1000;
+
+        if (!introSkipped && intro > 0) {
+            if (pos >= intro || mediaStartPos >= intro) {
+                introSkipped = true;   // 已自然播过/起播就在正片
+            } else if (pos >= 2000) {
+                // 从片头区起播: 播2秒(缓冲稳定)后跳到正片
+                player.seekTo(intro);
+                seekGraceUntil = now + 5_000L;
+                introSkipped = true;
+                toast("跳过片头");
+            }
+        }
+        if (!outroSkipped && outro > 0 && dur > 0 && dur != C.TIME_UNSET
+                && dur > outro + 10_000L && pos >= dur - outro) {
+            outroSkipped = true;
+            player.seekTo(dur - 50);  // 触发STATE_ENDED→自动下一集
+            seekGraceUntil = now + 5_000L;
+            toast("跳过片尾");
+        }
+    }
+
+    /** 每15秒把点播进度写入全局最后会话(启动续播用) */
+    private void periodicSave() {
+        if (player == null || curChannel == null || player.isCurrentMediaItemLive()) return;
+        if (!player.getPlayWhenReady() || player.getPlaybackState() != Player.STATE_READY) return;
+        long now = System.currentTimeMillis();
+        if (now - lastSessionSave < 15_000) return;
+        lastSessionSave = now;
+        long pos = player.getCurrentPosition();
+        if (pos > 0) Settings.get().saveLastSession(curChannel.key(), curUrlIndex, pos);
     }
 
     private void scheduleInfoHide() {
@@ -1154,17 +1259,79 @@ public class MainActivity extends AppCompatActivity {
         inputNum.setVisibility(View.GONE);
     }
 
-    private void togglePause() {
+    public void togglePause() {
         if (player == null) return;
         if (player.getPlayWhenReady()) {
+            userPaused = true;
             player.pause();
             showInfoBar();
             scheduleInfoHide();
             toast("暂停");
         } else {
+            userPaused = false;
             if (player.isCurrentMediaItemLive()) player.seekToDefaultPosition();
             player.play();
         }
+        updatePauseIcon();
+    }
+
+    private void updatePauseIcon() {
+        if (btnPause == null || player == null) return;
+        btnPause.setText(player.getPlayWhenReady() ? "⏸" : "▶");
+    }
+
+    // ---------- 画中画(小窗,系统PiP,API24+) ----------
+
+    @Override
+    public void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        // 按Home/切走: 正在播放时自动进小窗(设置"退到后台小窗"可关)
+        if (Settings.get().isPipOnLeave() && player != null && player.getPlayWhenReady()
+                && player.getPlaybackState() == Player.STATE_READY) {
+            enterPip();
+        }
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPiPMode) {
+        super.onPictureInPictureModeChanged(isInPiPMode);
+        if (isInPiPMode) {
+            hidePanel();
+            hideErrorPanel();
+            hideInfo.run();
+        }
+    }
+
+    private void enterPip() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            toast("系统版本过低,不支持小窗");
+            return;
+        }
+        try {
+            if (isInPictureInPictureMode()) return;
+            updatePipParams();
+            enterPictureInPictureMode();
+        } catch (Exception e) {
+            LogBuffer.log("pip", "进入小窗失败: " + e);
+            toast("进入小窗失败(设备可能不支持)");
+        }
+    }
+
+    /** 组装小窗参数: 视频宽高比 + 小窗上的播放/暂停按钮(API26+) */
+    private void updatePipParams() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        int w = vidW > 0 ? vidW : 16;
+        int h = vidH > 0 ? vidH : 9;
+        PictureInPictureParams.Builder b = new PictureInPictureParams.Builder()
+                .setAspectRatio(new Rational(w, h));
+        Intent i = new Intent(this, PiPActionReceiver.class)
+                .setAction(PiPActionReceiver.ACTION_TOGGLE);
+        PendingIntent pi = PendingIntent.getBroadcast(this, 1, i,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Icon icon = Icon.createWithResource(this, R.drawable.ic_launcher);
+        b.setActions(Arrays.asList(
+                new RemoteAction(icon, "暂停/继续", "暂停/继续", pi)));
+        setPictureInPictureParams(b.build());
     }
 
     private void setPaused(boolean paused) {
@@ -1225,7 +1392,8 @@ public class MainActivity extends AppCompatActivity {
         eyeOverlay.setVisibility(Settings.get().isEyeProtectMode() ? View.VISIBLE : View.GONE);
         if (player != null) {
             playerView.setResizeMode(mapScale(Settings.get().getScreenScale()));
-            player.setPlayWhenReady(true);
+            // 用户主动暂停的保持暂停,不再强制恢复播放
+            if (!userPaused) player.setPlayWhenReady(true);
         }
         if (App.playlistDirty) {
             App.playlistDirty = false;
@@ -1238,6 +1406,8 @@ public class MainActivity extends AppCompatActivity {
         super.onPause();
         if (player != null && curChannel != null) {
             Settings.get().saveSeekPos(curChannel.key(), player.getCurrentPosition());
+            long p = player.isCurrentMediaItemLive() ? 0 : player.getCurrentPosition();
+            Settings.get().saveLastSession(curChannel.key(), curUrlIndex, p);
             saveIndexes();
         }
     }
@@ -1245,6 +1415,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        current = null;
         handler.removeCallbacksAndMessages(null);
         MediaCache.cancelPrefetch();
         if (player != null) {

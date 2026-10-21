@@ -80,6 +80,13 @@ public class SettingsActivity extends AppCompatActivity {
             s.saveTimeOut(tos[(i + 1) % tos.length]);
         }));
 
+        // 片头/片尾跳过秒数,0=关
+        int[] skips = {0, 5, 10, 15, 30, 45, 60, 90, 120, 150, 180};
+        String[] skipNames = {"关", "5秒", "10秒", "15秒", "30秒", "45秒",
+                "60秒", "90秒", "2分钟", "2分半", "3分钟"};
+        options.add(cycle("片头跳过", skips, skipNames, s::getIntroSkip, s::setIntroSkip));
+        options.add(cycle("片尾跳过", skips, skipNames, s::getOutroSkip, s::setOutroSkip));
+
         options.add(toggle("EPG显示", s::isEpg, s::setEpg));
         options.add(toggle("列表EPG", s::isShowEpgList, s::setShowEpgList));
         options.add(toggle("显示时间", s::isShowTime, s::setShowTime));
@@ -87,6 +94,8 @@ public class SettingsActivity extends AppCompatActivity {
         options.add(toggle("开启时移", s::isShowSeekBack, s::setShowSeekBack));
         options.add(toggle("记忆播放", s::isRememberPlay, s::setRememberPlay));
         options.add(toggle("记忆多源", s::isRememberURLIndex, s::setRememberURLIndex));
+        options.add(toggle("启动续播", s::isResumeOnLaunch, s::setResumeOnLaunch));
+        options.add(toggle("退到后台小窗", s::isPipOnLeave, s::setPipOnLeave));
         options.add(toggle("开机自启", s::isStartAtPowerOn, s::setStartAtPowerOn));
         options.add(toggle("跨分类换台", s::isSwitchChannelInAll, s::setSwitchChannelInAll));
         options.add(toggle("换台反转", s::isReverseSwitchStyle, s::setReverseSwitchStyle));
@@ -109,6 +118,15 @@ public class SettingsActivity extends AppCompatActivity {
 
     private Option toggle(String name, Supplier<Boolean> get, java.util.function.Consumer<Boolean> set) {
         return new Option(name, () -> get.get() ? "开" : "关", () -> set.accept(!get.get()));
+    }
+
+    /** 数值循环选项: 点击在 vals 里轮转,显示 names[当前下标] */
+    private Option cycle(String name, int[] vals, String[] names,
+                         Supplier<Integer> get, java.util.function.Consumer<Integer> set) {
+        return new Option(name, () -> names[indexOf(vals, get.get())], () -> {
+            int i = indexOf(vals, get.get());
+            set.accept(vals[(i + 1) % vals.length]);
+        });
     }
 
     private int indexOf(int[] arr, int v) {
