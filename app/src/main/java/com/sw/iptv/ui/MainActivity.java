@@ -29,9 +29,9 @@ import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
 import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DataSpec;
+import androidx.media3.datasource.HttpDataSource;
 import androidx.media3.datasource.TransferListener;
 import androidx.media3.datasource.okhttp.OkHttpDataSource;
-import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.mediacodec.MediaCodecInfo;
@@ -46,7 +46,9 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.sw.iptv.App;
 import com.sw.iptv.R;
+import com.sw.iptv.core.GreedyLoadControl;
 import com.sw.iptv.core.LogBuffer;
+import com.sw.iptv.core.MediaCache;
 import com.sw.iptv.core.PlaylistLoader;
 import com.sw.iptv.core.Settings;
 import com.sw.iptv.core.TxtParser;
@@ -96,6 +98,10 @@ public class MainActivity extends AppCompatActivity {
     private Category curCategory;
     private Channel curChannel;
     private int curUrlIndex = 0;
+    private int failStreak = 0;    // 连续播放失败次数(READY后清零,自动重试按此退避)
+    private long retrySeekPos = -1; // 出错时的断点,自动重试时续播
+    private int retrySeekCount = 0; // 同一断点重试次数,防坏位置无限重放
+    private long seekGraceUntil = 0; // seek后看门狗宽限期,防快进缓冲被误判超时换源
     private String numBuf = "";
     private long bufferingSince = 0;
     private boolean panelChannelsFocused = false;
@@ -144,7 +150,10 @@ public class MainActivity extends AppCompatActivity {
                 handler.removeCallbacks(hideInfo);
             }
             @Override public void onStopTrackingTouch(SeekBar sb) {
-                if (player != null) player.seekTo(sb.getProgress() * 1000L);
+                if (player != null) {
+                    player.seekTo(sb.getProgress() * 1000L);
+                    seekGraceUntil = System.currentTimeMillis() + 15_000L;
+                }
                 scheduleInfoHide();
             }
         });
@@ -331,19 +340,15 @@ public class MainActivity extends AppCompatActivity {
         });
 
         bandwidthMeter = new DefaultBandwidthMeter.Builder(this).build();
-        // min=50s(默认): 缓冲跌破即恢复拉流; max=600s: mp4等文件源网速好就一直预载
-        // 到领先10分钟才停,断网后靠缓冲余量继续播; 直播受实时供给限制不会超发
-        // 字节上限: 取 min(600MB, 可用堆一半),下限150MB(≈旧默认)防低配设备OOM/退化
+        // 堆内缓冲上限: 取 min(600MB, 可用堆一半),下限150MB 防低配设备OOM。
+        // GreedyLoadControl 用它兜底:没到上限就一直全速拉,不因"领先N秒"停拉;
+        // 大文件的整体预拉由 MediaCache 后台线程下到磁盘(2GB LRU),与堆解耦
         long heap = Runtime.getRuntime().maxMemory();
         int targetBytes = (int) Math.max(150L << 20, Math.min(600L << 20, heap / 2));
-        DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
-                .setBufferDurationsMs(50_000, 600_000, 2_500, 5_000)
-                .setTargetBufferBytes(targetBytes)
-                .build();
         player = new ExoPlayer.Builder(this, rf)
-                .setMediaSourceFactory(new DefaultMediaSourceFactory(dsFactory))
+                .setMediaSourceFactory(new DefaultMediaSourceFactory(MediaCache.wrap(dsFactory)))
                 .setBandwidthMeter(bandwidthMeter)
-                .setLoadControl(loadControl)
+                .setLoadControl(new GreedyLoadControl(targetBytes))
                 .build();
         playerView.setPlayer(player);
         playerView.setResizeMode(mapScale(Settings.get().getScreenScale()));
@@ -357,10 +362,21 @@ public class MainActivity extends AppCompatActivity {
                     showLoading("缓冲中…");
                 } else if (state == Player.STATE_READY) {
                     bufferingSince = 0;
+                    failStreak = 0;
+                    retrySeekPos = -1;
+                    retrySeekCount = 0;
                     loading.setVisibility(View.GONE);
                     hideErrorPanel();
                     updateInfoBar();
                     scheduleInfoHide();
+                    // 就绪后后台开始全速预拉: 点播整文件/VOD切片提前下到磁盘;
+                    // 直播(内容还在生成)只取消不预拉
+                    if (player.isCurrentMediaItemLive()) {
+                        MediaCache.cancelPrefetch();
+                    } else if (curChannel != null && curUrlIndex < curChannel.urls.size()) {
+                        String u = curChannel.urls.get(curUrlIndex);
+                        if (!u.equals(MediaCache.prefetching())) MediaCache.startPrefetch(u);
+                    }
                 } else if (state == Player.STATE_ENDED) {
                     if (player.isCurrentMediaItemLive()) {
                         player.prepare();
@@ -398,13 +414,33 @@ public class MainActivity extends AppCompatActivity {
                 LogBuffer.log("error", error.getErrorCodeName() + " | " + error.getMessage()
                         + " | " + (curChannel != null ? curChannel.displayName() : "?")
                         + " | " + url);
+                // 打出真实失败的请求地址(m3u8或分片)与HTTP状态码,便于区分签名过期/限流
                 for (Throwable c = error.getCause(); c != null && c.getCause() != c; c = c.getCause()) {
-                    LogBuffer.log("error", "  cause: " + c);
+                    if (c instanceof HttpDataSource.InvalidResponseCodeException) {
+                        HttpDataSource.InvalidResponseCodeException ice =
+                                (HttpDataSource.InvalidResponseCodeException) c;
+                        LogBuffer.log("error", "  HTTP " + ice.responseCode + " " + ice.dataSpec.uri);
+                    } else {
+                        LogBuffer.log("error", "  cause: " + c);
+                    }
                 }
                 showError(error.getErrorCodeName() + ": " + error.getMessage());
+                // 记住断点,自动重试时续播(签名链接403常见于播放中途);
+                // 同一位置连续失败则放弃断点,防416/过期分片等坏位置无限重放
+                if (player != null) {
+                    long pos = player.getCurrentPosition();
+                    if (pos > 0 && pos == retrySeekPos) retrySeekCount++;
+                    else retrySeekCount = 0;
+                    retrySeekPos = pos;
+                }
+                failStreak++;
                 if (curChannel != null && curChannel.urls.size() <= 1) {
-                    showLoading("播放失败,20秒后自动重试");
-                    handler.postDelayed(singleRetry, 20000);
+                    // 退避重试: 10s/20s/40s/60s封顶。重试会重新拉m3u8拿新签名,
+                    // 但源站限流窗口内立即重试无意义,拉长间隔等窗口过去
+                    long delay = Math.min(10_000L << Math.min(failStreak - 1, 3), 60_000L);
+                    showLoading("播放失败, " + (delay / 1000) + "秒后自动重试(第" + failStreak + "次)");
+                    LogBuffer.log("play", "退避重试(" + (delay / 1000) + "s): " + curChannel.displayName());
+                    handler.postDelayed(singleRetry, delay);
                     return;
                 }
                 tryNextSource();
@@ -488,16 +524,28 @@ public class MainActivity extends AppCompatActivity {
     private final Runnable singleRetry = () -> {
         if (curChannel != null && (player == null || !player.isPlaying())) {
             LogBuffer.log("play", "自动重试: " + curChannel.displayName());
-            playChannel(curChannel, curUrlIndex);
+            long pos = retrySeekPos;
+            retrySeekPos = -1;
+            if (pos > 0 && retrySeekCount >= 2) {
+                LogBuffer.log("play", "断点重试" + retrySeekCount + "次仍失败,放弃断点从头播放");
+                pos = 0;
+            }
+            playChannel(curChannel, curUrlIndex, pos);
         }
     };
 
     private void playChannel(Channel c, int urlIndex) {
+        playChannel(c, urlIndex, -1);
+    }
+
+    /** seekOverride>=0 时从该位置续播(自动重试用),否则走"记忆播放"逻辑。 */
+    private void playChannel(Channel c, int urlIndex, long seekOverride) {
         if (c == null || c.urls.isEmpty()) {
             toast("该频道无可用源");
             return;
         }
         handler.removeCallbacks(singleRetry);
+        MediaCache.cancelPrefetch();   // 换台/重试: 先停掉上一个的预拉
         hideErrorPanel();
         curChannel = c;
         for (Category cat : categories) if (cat.channels.contains(c)) { curCategory = cat; break; }
@@ -510,7 +558,11 @@ public class MainActivity extends AppCompatActivity {
         if (Settings.get().isRememberURLIndex()) Settings.get().saveUrlIndex(c, curUrlIndex);
 
         long seekTo = 0;
-        if (Settings.get().isRememberPlay()) seekTo = Settings.get().getSeekPos(c.key());
+        if (seekOverride >= 0) {
+            seekTo = seekOverride;
+        } else if (Settings.get().isRememberPlay()) {
+            seekTo = Settings.get().getSeekPos(c.key());
+        }
 
         MediaItem item = new MediaItem.Builder().setUri(url).build();
         player.setMediaItem(item);
@@ -532,12 +584,17 @@ public class MainActivity extends AppCompatActivity {
             showLoading("播放失败,无更多源可切换");
             return;
         }
+        // 换源时保住当前进度(直播除外,直播seek易越窗报错)
+        long pos = -1;
+        if (player != null && !player.isCurrentMediaItemLive() && player.getCurrentPosition() > 0) {
+            pos = player.getCurrentPosition();
+        }
         curUrlIndex = (curUrlIndex + 1) % curChannel.urls.size();
         String name = curUrlIndex < curChannel.urlNames.size() ? curChannel.urlNames.get(curUrlIndex) : "";
         LogBuffer.log("play", "切换线路 " + (curUrlIndex + 1) + "/" + curChannel.urls.size()
                 + (name.isEmpty() ? "" : " " + name));
         toast("切换到线路 " + (curUrlIndex + 1) + (name.isEmpty() ? "" : " " + name));
-        playChannel(curChannel, curUrlIndex);
+        playChannel(curChannel, curUrlIndex, pos);
     }
 
     private void saveIndexes() {
@@ -552,7 +609,9 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void run() {
                 int timeout = Settings.get().getTimeOut();
+                // seek后15秒内不换源:快进到未缓冲区必然短暂缓冲,不能误判为源挂了
                 if (timeout > 0 && bufferingSince > 0
+                        && System.currentTimeMillis() >= seekGraceUntil
                         && System.currentTimeMillis() - bufferingSince > timeout * 1000L
                         && curChannel != null && curChannel.urls.size() > 1) {
                     bufferingSince = 0;
@@ -786,6 +845,7 @@ public class MainActivity extends AppCompatActivity {
     private void updateTouchSeek(float totalDx) {
         if (player == null) return;
         long dur = player.getDuration();
+        if (dur <= 0 || dur == C.TIME_UNSET) return; // 时长未知时不能夹取,否则恒seek到0
         long target = seekBase + (long) (totalDx / touchSeekWidth * touchSeekRange);
         target = Math.max(0, Math.min(target, dur));
         pendingSeek = target - seekBase;
@@ -799,6 +859,7 @@ public class MainActivity extends AppCompatActivity {
         seekHint.setVisibility(View.GONE);
         if (commit && player != null && seekBase >= 0 && pendingSeek != 0) {
             player.seekTo(seekBase + pendingSeek);
+            seekGraceUntil = System.currentTimeMillis() + 15_000L;
         }
         pendingSeek = 0;
         seekBase = -1;
@@ -1097,6 +1158,7 @@ public class MainActivity extends AppCompatActivity {
     private final Runnable seekCommit = () -> {
         if (player != null && pendingSeek != 0 && seekBase >= 0) {
             player.seekTo(seekBase + pendingSeek);
+            seekGraceUntil = System.currentTimeMillis() + 15_000L;
         }
         pendingSeek = 0;
         seekBase = -1;
@@ -1150,6 +1212,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         handler.removeCallbacksAndMessages(null);
+        MediaCache.cancelPrefetch();
         if (player != null) {
             player.release();
             player = null;
