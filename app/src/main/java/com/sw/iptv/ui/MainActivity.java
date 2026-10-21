@@ -88,6 +88,7 @@ public class MainActivity extends AppCompatActivity {
 
     private ExoPlayer player;
     private DefaultBandwidthMeter bandwidthMeter;
+    private OkHttpClient mediaHttp;   // 播放链路HTTP客户端,403时清空连接池换新连接
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<Category> categories = new ArrayList<>();
     private final List<Channel> flatChannels = new ArrayList<>();
@@ -277,7 +278,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initPlayer() {
-        OkHttpClient http = new OkHttpClient.Builder()
+        mediaHttp = new OkHttpClient.Builder()
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(60, TimeUnit.SECONDS)
                 // bilivideo CDN 强制 Referer+浏览器UA; 网络拦截器对每次真实请求(含重定向)生效,
@@ -295,7 +296,7 @@ public class MainActivity extends AppCompatActivity {
                     return chain.proceed(req);
                 })
                 .build();
-        OkHttpDataSource.Factory dsFactory = new OkHttpDataSource.Factory(http)
+        OkHttpDataSource.Factory dsFactory = new OkHttpDataSource.Factory(mediaHttp)
                 .setUserAgent(Settings.get().getUserAgent());
         // 统计实际下行字节数,供常驻网速显示
         dsFactory.setTransferListener(new TransferListener() {
@@ -359,6 +360,7 @@ public class MainActivity extends AppCompatActivity {
                 updateKeepScreenOn();
                 if (state == Player.STATE_BUFFERING) {
                     bufferingSince = System.currentTimeMillis();
+                    MediaCache.cancelPrefetch();  // 缓冲时把带宽让给播放器,READY后再续拉
                     showLoading("缓冲中…");
                 } else if (state == Player.STATE_READY) {
                     bufferingSince = 0;
@@ -415,16 +417,23 @@ public class MainActivity extends AppCompatActivity {
                         + " | " + (curChannel != null ? curChannel.displayName() : "?")
                         + " | " + url);
                 // 打出真实失败的请求地址(m3u8或分片)与HTTP状态码,便于区分签名过期/限流
-                for (Throwable c = error.getCause(); c != null && c.getCause() != c; c = c.getCause()) {
+                int httpCode = -1;
+                for (Throwable c = error; c != null && c.getCause() != c; c = c.getCause()) {
                     if (c instanceof HttpDataSource.InvalidResponseCodeException) {
                         HttpDataSource.InvalidResponseCodeException ice =
                                 (HttpDataSource.InvalidResponseCodeException) c;
+                        httpCode = ice.responseCode;
                         LogBuffer.log("error", "  HTTP " + ice.responseCode + " " + ice.dataSpec.uri);
                     } else {
                         LogBuffer.log("error", "  cause: " + c);
                     }
                 }
                 showError(error.getErrorCodeName() + ": " + error.getMessage());
+                MediaCache.cancelPrefetch();  // 播放已出错,停预拉别再加压
+                if (httpCode == 403 && mediaHttp != null) {
+                    // 清空连接池: 下次走新TCP连接,避开刚403的边缘节点/失效会话
+                    mediaHttp.connectionPool().evictAll();
+                }
                 // 记住断点,自动重试时续播(签名链接403常见于播放中途);
                 // 同一位置连续失败则放弃断点,防416/过期分片等坏位置无限重放
                 if (player != null) {
@@ -435,11 +444,13 @@ public class MainActivity extends AppCompatActivity {
                 }
                 failStreak++;
                 if (curChannel != null && curChannel.urls.size() <= 1) {
-                    // 退避重试: 10s/20s/40s/60s封顶。重试会重新拉m3u8拿新签名,
-                    // 但源站限流窗口内立即重试无意义,拉长间隔等窗口过去
-                    long delay = Math.min(10_000L << Math.min(failStreak - 1, 3), 60_000L);
+                    // 退避重试: 403为瞬时(限流/边缘/换签名即恢复)→2s/4s/8s/16s快速续播;
+                    // 其它错误10s/20s/40s/60s。重试会重新拉m3u8拿新签名
+                    long base = httpCode == 403 ? 2_000L : 10_000L;
+                    long delay = Math.min(base << Math.min(failStreak - 1, 3), 60_000L);
                     showLoading("播放失败, " + (delay / 1000) + "秒后自动重试(第" + failStreak + "次)");
-                    LogBuffer.log("play", "退避重试(" + (delay / 1000) + "s): " + curChannel.displayName());
+                    LogBuffer.log("play", "退避重试(" + (delay / 1000) + "s"
+                            + (httpCode == 403 ? ",403" : "") + "): " + curChannel.displayName());
                     handler.postDelayed(singleRetry, delay);
                     return;
                 }
