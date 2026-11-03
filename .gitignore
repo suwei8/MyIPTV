@@ -14,3 +14,5 @@ release/
 *.jks
 keystore.properties
 .env
+# 含签名密钥库密码的本地文档, 禁止提交(本仓库为公开仓库)
+KEYSTORE_INFO.md
