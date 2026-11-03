@@ -56,6 +56,7 @@ import com.sw.iptv.R;
 import com.sw.iptv.core.GreedyLoadControl;
 import com.sw.iptv.core.LogBuffer;
 import com.sw.iptv.core.MediaCache;
+import com.sw.iptv.core.MiguResolver;
 import com.sw.iptv.core.PlaylistLoader;
 import com.sw.iptv.core.Settings;
 import com.sw.iptv.core.TxtParser;
@@ -669,6 +670,25 @@ public class MainActivity extends AppCompatActivity {
             seekTo = Settings.get().getSeekPos(c.key());
         }
 
+        if (MiguResolver.isMigu(url)) {
+            // migu://伪源: 咪咕接口现签现解析, URL与请求IP绑定, 必须本机解析
+            showLoading("正在解析咪咕源…");
+            final String migu = url;
+            final long seekF = seekTo;
+            new Thread(() -> {
+                String resolved = MiguResolver.resolve(migu);
+                handler.post(() -> {
+                    if (resolved != null) attachPlayback(resolved, seekF);
+                    else tryNextSource();
+                });
+            }).start();
+            return;
+        }
+        attachPlayback(url, seekTo);
+    }
+
+    /** 把已确定的媒体地址交给播放器并更新 UI/EPG/记忆状态。 */
+    private void attachPlayback(String url, long seekTo) {
         MediaItem item = new MediaItem.Builder().setUri(url).build();
         player.setMediaItem(item);
         if (seekTo > 0) player.seekTo(seekTo);
@@ -682,8 +702,8 @@ public class MainActivity extends AppCompatActivity {
         saveIndexes();
         showInfoBar();
         updateInfoBar();
-        queryEpg(c);
-        chAdapter.setPlaying(c);
+        queryEpg(curChannel);
+        chAdapter.setPlaying(curChannel);
         bufferingSince = System.currentTimeMillis();
     }
 
