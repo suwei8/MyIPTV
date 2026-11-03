@@ -16,6 +16,7 @@ import com.sw.iptv.App;
 import com.sw.iptv.R;
 import com.sw.iptv.core.PlaylistLoader;
 import com.sw.iptv.core.Settings;
+import com.sw.iptv.core.Updater;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -103,6 +104,18 @@ public class SettingsActivity extends AppCompatActivity {
         options.add(toggle("传统列表", s::isShiJiListStyle, s::setShiJiListStyle));
         options.add(toggle("护眼模式", s::isEyeProtectMode, s::setEyeProtectMode));
         options.add(toggle("隐藏频道号", s::isChannelNumHide, s::setChannelNumHide));
+
+        // ---------- 应用更新 ----------
+        options.add(new Option("检查更新", () -> "v" + Updater.currentVersionName(this), () ->
+                Updater.check(this, (rel, err) -> UpdateFlow.showCheckResult(this, rel, err))));
+
+        options.add(toggle("自动检查更新", s::isAutoCheckUpdate, s::setAutoCheckUpdate));
+
+        options.add(new Option("更新地址", s::getUpdateUrl, () ->
+                input("更新检查地址", s.getUpdateUrl(), v -> {
+                    s.saveUpdateUrl(v.trim().isEmpty() ? Settings.DEFAULT_UPDATE_URL : v.trim());
+                    toast("已保存");
+                })));
 
         options.add(new Option("重新加载播放源", null, () -> {
             App.playlistDirty = true;

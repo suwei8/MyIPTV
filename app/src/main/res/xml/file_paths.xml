@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 更新包下载目录: getExternalFilesDir(null)/update -->
+    <external-files-path name="update_ext" path="update/" />
+    <!-- 兜底: 内部存储 files/update -->
+    <files-path name="update_int" path="update/" />
+</paths>

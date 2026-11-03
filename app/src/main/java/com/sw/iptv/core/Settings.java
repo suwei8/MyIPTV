@@ -16,6 +16,9 @@ public class Settings {
 
     public static final String DEFAULT_CHANNEL_URL = "https://v.555606.xyz/iptv.txt";
     public static final String DEFAULT_EPG_URL = "http://epg.112114.xyz/";
+    /** 更新检查地址: 公开分发仓库 MyIPTV-dist 的 latest release API */
+    public static final String DEFAULT_UPDATE_URL =
+            "https://api.github.com/repos/suwei8/MyIPTV-dist/releases/latest";
 
     private Settings() {
         sp = App.ctx().getSharedPreferences("XLIVE", Context.MODE_PRIVATE);
@@ -36,6 +39,16 @@ public class Settings {
 
     public String getUserAgent() { return sp.getString("UserAgent", "Lavf/57.83.100"); }
     public void saveUserAgent(String v) { ed.putString("UserAgent", v).commit(); }
+
+    // ---------- 自更新 ----------
+    public boolean isAutoCheckUpdate() { return sp.getBoolean("AUTO_UPDATE", true); }
+    public void setAutoCheckUpdate(boolean v) { ed.putBoolean("AUTO_UPDATE", v).commit(); }
+    public String getUpdateUrl() { return sp.getString("UPDATE_URL", DEFAULT_UPDATE_URL); }
+    public void saveUpdateUrl(String v) { ed.putString("UPDATE_URL", v).commit(); }
+    public long getLastUpdateCheck() { return sp.getLong("UPDATE_LAST_CHECK", 0L); }
+    public void setLastUpdateCheck(long v) { ed.putLong("UPDATE_LAST_CHECK", v).commit(); }
+    public int getIgnoredUpdate() { return sp.getInt("UPDATE_IGNORE", -1); }
+    public void setIgnoredUpdate(int v) { ed.putInt("UPDATE_IGNORE", v).commit(); }
 
     // ---------- 播放状态 ----------
     public int getCategoryIndex() { return sp.getInt("CATEGORY_INDEX", 1); }

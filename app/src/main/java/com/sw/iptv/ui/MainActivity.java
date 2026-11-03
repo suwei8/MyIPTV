@@ -59,6 +59,7 @@ import com.sw.iptv.core.MediaCache;
 import com.sw.iptv.core.PlaylistLoader;
 import com.sw.iptv.core.Settings;
 import com.sw.iptv.core.TxtParser;
+import com.sw.iptv.core.Updater;
 import com.sw.iptv.epg.EpgClient;
 import com.sw.iptv.model.Category;
 import com.sw.iptv.model.Channel;
@@ -156,6 +157,22 @@ public class MainActivity extends AppCompatActivity {
         loadPlaylist();
         eyeOverlay.setVisibility(Settings.get().isEyeProtectMode() ? View.VISIBLE : View.GONE);
         rootTick();
+        maybeAutoCheckUpdate();
+    }
+
+    /** 启动时静默检查更新(受"自动检查更新"开关与节流控制)。 */
+    private void maybeAutoCheckUpdate() {
+        final Settings s = Settings.get();
+        if (!s.isAutoCheckUpdate()) return;
+        long now = System.currentTimeMillis();
+        if (now - s.getLastUpdateCheck() < 12 * 3600_000L) return; // 12h 内只检查一次
+        s.setLastUpdateCheck(now);
+        Updater.check(this, (rel, err) -> {
+            if (isFinishing() || rel == null) return;
+            if (rel.versionCode > 0 && rel.versionCode == Settings.get().getIgnoredUpdate()) return;
+            if (!rel.isNewerThan(Updater.currentVersionCode(this), Updater.currentVersionName(this))) return;
+            UpdateFlow.showUpdateDialog(this, rel);
+        });
     }
 
     private void bindViews() {
