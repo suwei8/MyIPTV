@@ -22,11 +22,24 @@ public class TextAdapter<T> extends RecyclerView.Adapter<TextAdapter.Holder> {
     private final List<T> items = new ArrayList<>();
     private final Function<T, String> labeler;
     private int selected = -1;
+    private RecyclerView recyclerView;
     public OnClick<T> onClick;
     public OnClick<T> onLongClick;
     public OnClick<T> onFocus;
 
     public TextAdapter(Function<T, String> labeler) { this.labeler = labeler; }
+
+    @Override
+    public void onAttachedToRecyclerView(@NonNull RecyclerView rv) {
+        super.onAttachedToRecyclerView(rv);
+        recyclerView = rv;
+    }
+
+    @Override
+    public void onDetachedFromRecyclerView(@NonNull RecyclerView rv) {
+        super.onDetachedFromRecyclerView(rv);
+        recyclerView = null;
+    }
 
     public void setItems(List<T> list) {
         items.clear();
@@ -37,8 +50,28 @@ public class TextAdapter<T> extends RecyclerView.Adapter<TextAdapter.Holder> {
     public void setSelected(int pos) {
         int old = selected;
         selected = pos;
-        if (old >= 0) notifyItemChanged(old);
-        if (pos >= 0) notifyItemChanged(pos);
+        notifyItemChangedSafe(old);
+        notifyItemChangedSafe(pos);
+    }
+
+    /**
+     * 安全刷新单行:焦点切换(onFocusChange)常发生在 RecyclerView 布局/滚动过程中,
+     * 此时直接 notifyItemChanged 会抛
+     * "Cannot call this method while RecyclerView is computing a layout or scrolling" 导致崩溃。
+     * 改为 post 到下一帧执行即可避开布局/滚动;选中态字段已同步更新,
+     * 延迟的 rebind 读到的仍是最新 selected,不会错位。
+     */
+    private void notifyItemChangedSafe(int pos) {
+        if (pos < 0 || pos >= items.size()) return;
+        final int p = pos;
+        RecyclerView rv = recyclerView;
+        if (rv == null) {
+            notifyItemChanged(p);
+        } else {
+            rv.post(() -> {
+                if (p < items.size()) notifyItemChanged(p);
+            });
+        }
     }
 
     public int getSelected() { return selected; }
