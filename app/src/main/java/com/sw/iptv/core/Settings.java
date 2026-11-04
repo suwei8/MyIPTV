@@ -16,9 +16,9 @@ public class Settings {
 
     public static final String DEFAULT_CHANNEL_URL = "https://v.555606.xyz/iptv.txt";
     public static final String DEFAULT_EPG_URL = "http://epg.112114.xyz/";
-    /** 更新检查地址: 公开分发仓库 MyIPTV-dist 的 latest release API */
-    public static final String DEFAULT_UPDATE_URL =
-            "https://api.github.com/repos/suwei8/MyIPTV-dist/releases/latest";
+    /** 更新检查地址: GitHub Pages(绑 v.555606.xyz)托管的 version.json, 国内可达;
+     *  旧默认地址 api.github.com 国内不稳定, 仅作备用 */
+    public static final String DEFAULT_UPDATE_URL = "https://v.555606.xyz/version.json";
 
     private Settings() {
         sp = App.ctx().getSharedPreferences("XLIVE", Context.MODE_PRIVATE);

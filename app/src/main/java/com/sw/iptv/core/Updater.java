@@ -80,6 +80,7 @@ public class Updater {
         public int versionCode;   // 0 表示未知, 此时用 versionName 比较
         public String versionName;
         public String apkUrl;
+        public String mirrorUrl;  // 备用下载地址(GitHub release), 主地址失败时回退
         public String notes;
         public String signed;     // "release" / "debug" / null
         public long size;
@@ -126,6 +127,24 @@ public class Updater {
 
     private static Release parseRelease(JSONObject root) throws Exception {
         Release r = new Release();
+
+        // GitHub Pages 托管的 version.json(无 tag_name): {"versionCode":N,"versionName":"x","apk":"url","apkGithub":"url"}
+        if (root.optString("tag_name", "").isEmpty()
+                && (root.has("versionCode") || root.has("apk"))) {
+            r.versionCode = root.optInt("versionCode", 0);
+            r.versionName = normalizeVersion(root.optString("versionName", ""));
+            r.apkUrl = root.optString("apk", "");
+            r.mirrorUrl = root.optString("apkGithub", "");
+            r.signed = root.optString("signed", "");
+            r.notes = root.optString("notes", "");
+            if (r.apkUrl.isEmpty() && !r.mirrorUrl.isEmpty()) {
+                r.apkUrl = r.mirrorUrl;
+                r.mirrorUrl = null;
+            }
+            if (r.apkUrl.isEmpty()) throw new Exception("version.json 中没有 APK 地址");
+            return r;
+        }
+
         String tag = root.optString("tag_name", "");
         r.versionName = normalizeVersion(tag);
         r.notes = root.optString("body", "");
@@ -185,31 +204,14 @@ public class Updater {
             File out = new File(dir, "MyIPTV-update.apk");
             String err = null;
             try {
-                Request req = new Request.Builder()
-                        .url(rel.apkUrl)
-                        .header("Accept", "application/octet-stream")
-                        .header("User-Agent", "MyIPTV-Updater")
-                        .build();
-                Response resp = client().newCall(req).execute();
-                if (!resp.isSuccessful()) throw new Exception("HTTP " + resp.code());
-                ResponseBody body = resp.body();
-                if (body == null) throw new Exception("空响应");
-                long total = body.contentLength();
-                if (total <= 0) total = rel.size;
-                InputStream in = body.byteStream();
-                FileOutputStream fos = new FileOutputStream(tmp);
-                byte[] buf = new byte[64 * 1024];
-                long done = 0;
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    fos.write(buf, 0, n);
-                    done += n;
-                    if (prog != null) prog.onProgress(done, total);
+                try {
+                    fetchToFile(rel.apkUrl, tmp, prog, rel.size);
+                } catch (Exception e1) {
+                    // 主地址失败且有镜像(GitHub release)时回退重试一次
+                    if (rel.mirrorUrl == null || rel.mirrorUrl.isEmpty()) throw e1;
+                    LogBuffer.log(TAG, "主下载地址失败,尝试镜像: " + e1.getMessage());
+                    fetchToFile(rel.mirrorUrl, tmp, prog, rel.size);
                 }
-                fos.flush();
-                fos.close();
-                in.close();
-                resp.close();
                 if (out.exists() && !out.delete()) {
                     // 旧文件删不掉时换个名字, 保证本次一定能落盘
                     out = new File(dir, "MyIPTV-update-" + System.currentTimeMillis() + ".apk");
@@ -226,6 +228,35 @@ public class Updater {
             final String fErr = err;
             MAIN.post(() -> cb.onDone(fErr == null ? fOut : null, fErr));
         }, "update-download").start();
+    }
+
+    /** 单次下载到 tmp 文件, 失败抛异常由调用方决定是否走镜像。 */
+    private static void fetchToFile(String url, File tmp, ProgressCallback prog, long sizeHint)
+            throws Exception {
+        Request req = new Request.Builder()
+                .url(url)
+                .header("Accept", "application/octet-stream")
+                .header("User-Agent", "MyIPTV-Updater")
+                .build();
+        try (Response resp = client().newCall(req).execute()) {
+            if (!resp.isSuccessful()) throw new Exception("HTTP " + resp.code());
+            ResponseBody body = resp.body();
+            if (body == null) throw new Exception("空响应");
+            long total = body.contentLength();
+            if (total <= 0) total = sizeHint;
+            try (InputStream in = body.byteStream();
+                 FileOutputStream fos = new FileOutputStream(tmp)) {
+                byte[] buf = new byte[64 * 1024];
+                long done = 0;
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    fos.write(buf, 0, n);
+                    done += n;
+                    if (prog != null) prog.onProgress(done, total);
+                }
+                fos.flush();
+            }
+        }
     }
 
     // ---------- 签名校验(防签名不一致导致安装失败) ----------
