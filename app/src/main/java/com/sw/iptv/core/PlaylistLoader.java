@@ -43,6 +43,7 @@ public class PlaylistLoader {
                 try {
                     Request req = new Request.Builder().url(url)
                             .header("User-Agent", Settings.get().getUserAgent())
+                            .header("Cache-Control", "no-cache")
                             .build();
                     try (Response resp = client.newCall(req).execute()) {
                         if (resp.isSuccessful()) {

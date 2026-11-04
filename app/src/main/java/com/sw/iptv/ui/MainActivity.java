@@ -220,6 +220,10 @@ public class MainActivity extends AppCompatActivity {
         btnCopyLog.setOnClickListener(v -> copyLog());
         findViewById(R.id.btn_settings).setOnClickListener(v ->
                 startActivity(new Intent(this, SettingsActivity.class)));
+        findViewById(R.id.btn_refresh).setOnClickListener(v -> {
+            toast("正在刷新直播源…");
+            loadPlaylist();
+        });
         btnPause = findViewById(R.id.btn_pause);
         btnPip = findViewById(R.id.btn_pip);
         btnPause.setOnClickListener(v -> togglePause());
@@ -1215,6 +1219,11 @@ public class MainActivity extends AppCompatActivity {
                 return true;
             case KeyEvent.KEYCODE_MENU:
                 startActivity(new Intent(this, SettingsActivity.class));
+                return true;
+            case KeyEvent.KEYCODE_PROG_RED:
+                // 遥控器红键: 手动刷新直播源(iptv.txt)
+                toast("正在刷新直播源…");
+                loadPlaylist();
                 return true;
             case KeyEvent.KEYCODE_BACK:
                 if (Settings.get().isQuickExitStyle()) {
