@@ -106,6 +106,37 @@ public final class MiguResolver {
         return dd.toString();
     }
 
+    /** http://*.miguvideo.com:8080/x -> https://*.miguvideo.com/x (443同内容,免劫持); 非咪咕域名返回null */
+    private static String toHttps(String url) {
+        if (url == null || !url.startsWith("http://") || !url.contains("miguvideo.com")) {
+            return null;
+        }
+        return "https://" + url.substring(7).replace(":8080/", "/");
+    }
+
+    /** 跟随 302 链至终链; preferHttps=true 时每跳优先改写为 https。异常/无终链返回 null */
+    private static String followChain(String url, boolean preferHttps) {
+        for (int i = 0; i < 6; i++) {
+            try {
+                Request req = new Request.Builder().url(url)
+                        .header("User-Agent", MIGU_UA).build();
+                try (Response r = CLIENT.newCall(req).execute()) {
+                    if (r.code() != 302) return url;
+                    String loc = r.header("Location");
+                    if (loc == null || loc.isEmpty() || loc.startsWith("http://bofang")) return url;
+                    if (preferHttps) {
+                        String h = toHttps(loc);
+                        if (h != null) loc = h;
+                    }
+                    url = loc;
+                }
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        return url;
+    }
+
     /** playurl 签名→puData/ddCalcu→手动跟 302(UA MiguVideo)→终链 */
     private static String miguResolve(String pid) throws Exception {
         try (Response res = CLIENT.newCall(apiRequest(pid)).execute()) {
@@ -120,17 +151,12 @@ public final class MiguResolver {
             Matcher m = PUDATA.matcher(url);
             if (!m.find()) return null;
             url += "&ddCalcu=" + ddCalcu(m.group(1), pid) + "&sv=10004&ct=android";
-            for (int i = 0; i < 6; i++) {
-                Request req = new Request.Builder().url(url)
-                        .header("User-Agent", MIGU_UA).build();
-                try (Response r = CLIENT.newCall(req).execute()) {
-                    if (r.code() != 302) return url;
-                    String loc = r.header("Location");
-                    if (loc == null || loc.isEmpty() || loc.startsWith("http://bofang")) return url;
-                    url = loc;
-                }
-            }
-            return url;
+
+            // 运营商 HTTP 劫持防护: 先走全 https 链(443同内容,明文链路注入HTML即劫持);
+            // 任一环失败再回落原 http 链, 兼顾不支持https的边缘节点
+            String r = followChain(toHttps(url) != null ? toHttps(url) : url, true);
+            if (r != null) return r;
+            return followChain(url, false);
         }
     }
 }
