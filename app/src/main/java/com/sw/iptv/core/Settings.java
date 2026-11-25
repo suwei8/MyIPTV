@@ -100,7 +100,7 @@ public class Settings {
     public void setCategoryHide(String name, boolean v) { ed.putBoolean("HIDE_" + name, v).commit(); }
 
     // ---------- 数值 ----------
-    public int getMediaCodec() { return sp.getInt("解码方式", 0); }       // 0自动 1硬解优先 2软解优先
+    public int getMediaCodec() { return sp.getInt("解码方式", 0); }       // 0自动 1硬解优先 2软解优先 3扩展软解 4关闭扩展
     public void saveMediaCodec(int v) { ed.putInt("解码方式", v).commit(); }
     public int getScreenScale() { return sp.getInt("画面比例", 0); }      // 0适应 1填充 2原始 3拉伸16:9 4拉伸4:3
     public void saveScreenScale(int v) { ed.putInt("画面比例", v).commit(); }
