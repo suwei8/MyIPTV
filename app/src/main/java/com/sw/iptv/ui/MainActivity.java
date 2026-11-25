@@ -384,6 +384,10 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
+        // API22及以下系统缺__register_atfork(API23新增),先加载shim补符号,
+        // 否则libmedia3ext.so dlopen失败,ffmpeg软解整体不可用(黑屏)
+        try { System.loadLibrary("atforkshim"); }
+        catch (Throwable t) { LogBuffer.log("render", "atforkshim load fail: " + t); }
         DefaultRenderersFactory rf = new NextRenderersFactory(this);
         int codecMode = Settings.get().getMediaCodec();
         playerCodecMode = codecMode;
