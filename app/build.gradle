@@ -10,7 +10,7 @@ if (keystorePropsFile.exists()) {
 
 android {
     namespace 'com.sw.iptv'
-    compileSdk 34
+    compileSdk 35
 
     defaultConfig {
         applicationId "com.sw.iptv"
