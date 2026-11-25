@@ -14,10 +14,10 @@ android {
 
     defaultConfig {
         applicationId "com.sw.iptv"
-        minSdk 23
+        minSdk 21
         targetSdk 34
-        versionCode 24
-        versionName "1.2.6"
+        versionCode 25
+        versionName "1.2.7"
     }
 
     signingConfigs {
