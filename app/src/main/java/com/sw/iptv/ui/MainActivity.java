@@ -98,6 +98,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean vZapDone = false;     // 本次手势已触发换台
 
     private ExoPlayer player;
+    private int playerCodecMode = -1;
     private DefaultBandwidthMeter bandwidthMeter;
     private OkHttpClient mediaHttp;   // 播放链路HTTP客户端,403时清空连接池换新连接
     public static MainActivity current; // PiP广播接收器回调用,随生命周期置空
@@ -379,7 +380,14 @@ public class MainActivity extends AppCompatActivity {
         });
 
         DefaultRenderersFactory rf = new DefaultRenderersFactory(this);
-        rf.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER);
+        int codecMode = Settings.get().getMediaCodec();
+        playerCodecMode = codecMode;
+        // 0/1/2 自动:平台解码优先,无平台解码器时才用扩展软解(AV1/VP9等)
+        // 3 扩展软解:AV1/VP9/HEVC一律走 libgav1/libvpx/ffmpeg(绕过有问题的硬解)
+        // 4 关闭扩展:只用平台 MediaCodec(老行为)
+        rf.setExtensionRendererMode(codecMode == 4 ? DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
+                : codecMode == 3 ? DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+                : DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON);
         rf.setMediaCodecSelector(new MediaCodecSelector() {
             @Override
             public List<MediaCodecInfo> getDecoderInfos(String mimeType, boolean requiresSecureDecoder,
@@ -387,7 +395,7 @@ public class MainActivity extends AppCompatActivity {
                 List<MediaCodecInfo> all = MediaCodecSelector.DEFAULT.getDecoderInfos(
                         mimeType, requiresSecureDecoder, requiresTunnelingDecoder);
                 int mode = Settings.get().getMediaCodec();
-                if (mode == 0) return all;
+                if (mode != 1 && mode != 2) return all;
                 List<MediaCodecInfo> prefer = new ArrayList<>();
                 List<MediaCodecInfo> rest = new ArrayList<>();
                 for (MediaCodecInfo i : all) {
@@ -1436,6 +1444,14 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         eyeOverlay.setVisibility(Settings.get().isEyeProtectMode() ? View.VISIBLE : View.GONE);
+        if (player != null && playerCodecMode != Settings.get().getMediaCodec()) {
+            long pos = Math.max(0, player.getCurrentPosition());
+            Channel ch = curChannel; int idx = curUrlIndex;
+            player.release(); player = null;
+            initPlayer();
+            if (ch != null) playChannel(ch, idx, pos);
+            toast("解码方式已切换");
+        }
         if (player != null) {
             playerView.setResizeMode(mapScale(Settings.get().getScreenScale()));
             // 用户主动暂停的保持暂停,不再强制恢复播放
