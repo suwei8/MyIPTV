@@ -22,19 +22,14 @@ public class GreedyLoadControl extends DefaultLoadControl {
      */
     public GreedyLoadControl(int capBytes) {
         super(new DefaultAllocator(true, 64 * 1024),
-                50_000,             // minBufferMs: 卡顿恢复门槛(保持默认)
-                50_000,             // minBufferForLocalPlaybackMs
-                Integer.MAX_VALUE,  // maxBufferMs: 时间不封顶,实际由字节上限兜底
-                Integer.MAX_VALUE,  // maxBufferForLocalPlaybackMs
-                2_500,              // bufferForPlaybackMs: 起播门槛,保持默认
-                2_500,              // bufferForPlaybackForLocalPlaybackMs
+                50_000,             // minBufferMs
+                Integer.MAX_VALUE,  // maxBufferMs: 时间不封顶,由字节上限兜底
+                2_500,              // bufferForPlaybackMs
                 5_000,              // bufferForPlaybackAfterRebufferMs
-                5_000,              // bufferForPlaybackAfterRebufferForLocalPlaybackMs
                 capBytes,           // 字节上限(堆内)
                 true,               // prioritizeTimeOverSizeThresholds
-                true,               // prioritizeTimeOverSizeThresholdsForLocalPlayback
-                0,                  // backBuffer 关闭
-                false);
+                0,                  // backBufferDurationMs
+                false);             // retainBackBufferFromKeyframe
         this.capBytes = capBytes;
     }
 
