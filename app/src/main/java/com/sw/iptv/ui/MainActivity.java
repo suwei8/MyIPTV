@@ -430,6 +430,11 @@ public class MainActivity extends AppCompatActivity {
         playerView.setPlayer(player);
         playerView.setResizeMode(mapScale(Settings.get().getScreenScale()));
 
+        // 逐个加载ffmpeg库,UnsatisfiedLinkError会直接报出缺失的符号名
+        for (String l : new String[]{"avutil","swresample","swscale","avcodec","avformat","ass","media3ext"}) {
+            try { System.loadLibrary(l); LogBuffer.log("render", "load " + l + " ok"); }
+            catch (Throwable t) { LogBuffer.log("render", "load " + l + " FAIL: " + t); }
+        }
         // 诊断:记录ffmpeg扩展可用性与实际解码器选择,排查老电视黑屏
         try {
             LogBuffer.log("render", "ffmpeg avail=" + FfmpegLibrary.isAvailable()
