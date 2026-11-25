@@ -66,7 +66,7 @@ public class SettingsActivity extends AppCompatActivity {
         options.add(new Option("UserAgent", s::getUserAgent, () ->
                 input("UserAgent", s.getUserAgent(), v -> s.saveUserAgent(v.trim()))));
 
-        String[] codecs = {"自动", "硬解优先", "软解优先"};
+        String[] codecs = {"自动", "硬解优先", "软解优先", "扩展软解", "关闭扩展"};
         options.add(new Option("解码方式", () -> codecs[s.getMediaCodec()], () ->
                 s.saveMediaCodec((s.getMediaCodec() + 1) % codecs.length)));
 
