@@ -40,6 +40,7 @@ import androidx.media3.datasource.HttpDataSource;
 import androidx.media3.datasource.TransferListener;
 import androidx.media3.datasource.okhttp.OkHttpDataSource;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
+import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.mediacodec.MediaCodecInfo;
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
@@ -379,7 +380,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        DefaultRenderersFactory rf = new DefaultRenderersFactory(this);
+        DefaultRenderersFactory rf = new NextRenderersFactory(this);
         int codecMode = Settings.get().getMediaCodec();
         playerCodecMode = codecMode;
         // 0/1/2 自动:平台解码优先,无平台解码器时才用扩展软解(AV1/VP9等)
