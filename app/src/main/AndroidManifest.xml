@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-sdk
+        android:minSdkVersion="21"
+        tools:overrideLibrary="androidx.media3.common,androidx.media3.container,androidx.media3.datasource,androidx.media3.decoder,androidx.media3.effect,androidx.media3.exoplayer,androidx.media3.exoplayer.dash,androidx.media3.exoplayer.hls,androidx.media3.extractor,androidx.media3.muxer,androidx.media3.session,androidx.media3.transformer,androidx.media3.ui,io.github.anilbeesetti.nextlib,io.github.anilbeesetti.nextlib.media3ext" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
