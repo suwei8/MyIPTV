@@ -16,8 +16,8 @@ android {
         applicationId "com.sw.iptv"
         minSdk 21
         targetSdk 34
-        versionCode 26
-        versionName "1.2.8"
+        versionCode 27
+        versionName "1.2.9"
     }
 
     signingConfigs {
@@ -47,6 +47,14 @@ android {
     }
 }
 
+configurations.all {
+    // nextlib 0.19 编译目标是 media3 1.11,但 1.9+ 调了 API23 的 checkSelfPermission
+    // 强制全部 media3 模块锁 1.8.0(最后一个 minSdk21 版本)
+    resolutionStrategy.eachDependency { d ->
+        if (d.requested.group == 'androidx.media3') d.useVersion '1.8.0'
+    }
+}
+
 dependencies {
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
     def media3 = '1.8.0'
@@ -54,7 +62,7 @@ dependencies {
     implementation "androidx.media3:media3-exoplayer-hls:$media3"
     implementation "androidx.media3:media3-exoplayer-dash:$media3"
     // 扩展软解(NextLib ffmpeg+dav1d): AV1/VP9/HEVC软解 + AC3/EAC3/DTS音频 - 老电视无硬解兜底
-    implementation "io.github.anilbeesetti:nextlib-media3ext:1.8.0-0.9.0"
+    implementation "io.github.anilbeesetti:nextlib-media3ext:1.11.1-0.19.0"
     implementation "androidx.media3:media3-ui:$media3"
     implementation "androidx.media3:media3-datasource-okhttp:$media3"
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
