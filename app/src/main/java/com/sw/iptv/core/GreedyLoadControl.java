@@ -34,13 +34,12 @@ public class GreedyLoadControl extends DefaultLoadControl {
                 true,               // prioritizeTimeOverSizeThresholds
                 true,               // prioritizeTimeOverSizeThresholdsForLocalPlayback
                 0,                  // backBuffer 关闭
-                false,
-                java.util.Collections.emptyMap());
+                false);
         this.capBytes = capBytes;
     }
 
     @Override
     public boolean shouldContinueLoading(LoadControl.Parameters params) {
-        return getAllocator(params.playerId).getTotalBytesAllocated() < capBytes;
+        return getAllocator().getTotalBytesAllocated() < capBytes;
     }
 }
