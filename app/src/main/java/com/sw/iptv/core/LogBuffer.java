@@ -2,6 +2,10 @@ package com.sw.iptv.core;
 
 import android.util.Log;
 
+import com.sw.iptv.App;
+
+import java.io.File;
+import java.io.FileWriter;
 import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.Date;
@@ -19,9 +23,17 @@ public class LogBuffer {
     private static boolean crashHooked = false;
 
     public static synchronized void log(String tag, String msg) {
-        lines.addLast(fmt.format(new Date()) + " [" + tag + "] " + msg);
+        String line = fmt.format(new Date()) + " [" + tag + "] " + msg;
+        lines.addLast(line);
         while (lines.size() > MAX_LINES) lines.removeFirst();
         Log.d("MyIPTV/" + tag, msg);
+        try {
+            File dir = App.ctx().getExternalFilesDir(null);
+            FileWriter w = new FileWriter(new File(dir, "app.log"), true);
+            w.write(line + "\n");
+            w.close();
+        } catch (Throwable ignored) {
+        }
     }
 
     public static synchronized String dump() {
