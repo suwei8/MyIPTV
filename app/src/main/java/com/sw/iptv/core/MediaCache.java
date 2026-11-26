@@ -154,6 +154,9 @@ public final class MediaCache {
         }
     }
 
+    /** 预拉限速: 平均速率不超 2MB/s, 给播放留带宽余量(尤其高峰被限速时) */
+    private static final long PREFETCH_CAP_BPS = 2L * 1024 * 1024;
+
     /** 整文件预拉(CacheWriter自动处理Range/无Range服务器),直到EOF或被取消 */
     private static void prefetchFile(String url) throws Exception {
         CacheDataSource ds = factory.createDataSource();
@@ -161,9 +164,17 @@ public final class MediaCache {
         try {
             DataSpec spec = new DataSpec.Builder().setUri(Uri.parse(url)).build();
             CacheWriter[] holder = new CacheWriter[1];
+            final long t0 = System.currentTimeMillis();
             w = new CacheWriter(ds, spec, null,
                     (cached, total, pct) -> {
                         if (stopFlag && holder[0] != null) holder[0].cancel();
+                        // 限速: 已拉字节数超过按cap应有的进度 → 睡眠补差
+                        long wantMs = cached * 1000 / PREFETCH_CAP_BPS;
+                        long elapsed = System.currentTimeMillis() - t0;
+                        if (wantMs > elapsed) {
+                            try { Thread.sleep(Math.min(wantMs - elapsed, 3000)); }
+                            catch (InterruptedException ignored) {}
+                        }
                     });
             holder[0] = w;
             activeWriter = w;
