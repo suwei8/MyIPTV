@@ -44,11 +44,7 @@ import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.mediacodec.MediaCodecInfo;
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector;
-import androidx.media3.common.Format;
-import androidx.media3.exoplayer.DecoderReuseEvaluation;
-import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.mediacodec.MediaCodecUtil;
-import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.FfmpegLibrary;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter;
 import androidx.media3.ui.AspectRatioFrameLayout;
@@ -384,10 +380,6 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // API22及以下系统缺__register_atfork(API23新增),先加载shim补符号,
-        // 否则libmedia3ext.so dlopen失败,ffmpeg软解整体不可用(黑屏)
-        try { System.loadLibrary("atforkshim"); }
-        catch (Throwable t) { LogBuffer.log("render", "atforkshim load fail: " + t); }
         DefaultRenderersFactory rf = new NextRenderersFactory(this);
         int codecMode = Settings.get().getMediaCodec();
         playerCodecMode = codecMode;
@@ -429,33 +421,6 @@ public class MainActivity extends AppCompatActivity {
                 .build();
         playerView.setPlayer(player);
         playerView.setResizeMode(mapScale(Settings.get().getScreenScale()));
-
-        // 逐个加载ffmpeg库,UnsatisfiedLinkError会直接报出缺失的符号名
-        for (String l : new String[]{"avutil","swresample","swscale","avcodec","avformat","ass","media3ext"}) {
-            try { System.loadLibrary(l); LogBuffer.log("render", "load " + l + " ok"); }
-            catch (Throwable t) { LogBuffer.log("render", "load " + l + " FAIL: " + t); }
-        }
-        // 诊断:记录ffmpeg扩展可用性与实际解码器选择,排查老电视黑屏
-        try {
-            LogBuffer.log("render", "ffmpeg avail=" + FfmpegLibrary.isAvailable()
-                    + " ver=" + FfmpegLibrary.getVersion()
-                    + " av01=" + FfmpegLibrary.supportsFormat("video/av01")
-                    + " vp9=" + FfmpegLibrary.supportsFormat("video/x-vnd.on2.vp9")
-                    + " hevc=" + FfmpegLibrary.supportsFormat("video/hevc"));
-        } catch (Throwable t) {
-            LogBuffer.log("render", "ffmpeg probe err: " + t);
-        }
-        player.addAnalyticsListener(new AnalyticsListener() {
-            @Override public void onVideoDecoderInitialized(EventTime et, String name, long t0, long t1) {
-                LogBuffer.log("render", "videoDecoder=" + name);
-            }
-            @Override public void onVideoInputFormatChanged(EventTime et, Format f, @Nullable DecoderReuseEvaluation d) {
-                LogBuffer.log("render", "videoFormat=" + f.sampleMimeType + " " + f.width + "x" + f.height);
-            }
-            @Override public void onAudioDecoderInitialized(EventTime et, String name, long t0, long t1) {
-                LogBuffer.log("render", "audioDecoder=" + name);
-            }
-        });
 
         player.addListener(new Player.Listener() {
             @Override
@@ -737,6 +702,10 @@ public class MainActivity extends AppCompatActivity {
 
     /** 把已确定的媒体地址交给播放器并更新 UI/EPG/记忆状态。 */
     private void attachPlayback(String url, long seekTo) {
+        if (player == null) {   // 异步回调期间播放器已被释放(换台/退出竞态)
+            LogBuffer.log("play", "attachPlayback drop: player released");
+            return;
+        }
         MediaItem item = new MediaItem.Builder().setUri(url).build();
         player.setMediaItem(item);
         if (seekTo > 0) player.seekTo(seekTo);
